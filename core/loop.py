@@ -31,6 +31,8 @@ class AgentLoop:
         try:
             max_steps = self.context.agent_profile.max_steps
             query = self.context.user_input
+            consecutive_failures = 0
+            max_failures = 2  # Allow 2 consecutive failures before giving up
 
             for step in range(max_steps):
                 self.context.step = step
@@ -77,9 +79,20 @@ class AgentLoop:
                     except Exception as e:
                         print(f"[perception] ⚠️ LLM perception failed: {e}")
                         print(f"[perception] Raw output: {perception_raw}")
-                        break
+                        # Create fallback perception with basic info from user input
+                        perception = PerceptionResult(
+                            user_input=query,
+                            intent="process query",
+                            entities=[],
+                            tool_hint="search" if any(word in query.lower() for word in ["find", "search", "get", "show"]) else None
+                        )
+                        print(f"[perception] Using fallback perception: {perception.intent}, {perception.tool_hint}")
 
-                print(f"[perception] Intent: {perception.intent}, Hint: {perception.tool_hint}")
+                # Validate perception before proceeding
+                if not hasattr(perception, 'user_input') or not perception.user_input:
+                    perception.user_input = query
+                
+                print(f"[perception] Intent: {perception.intent or 'None'}, Hint: {perception.tool_hint or 'None'}")
 
                 # 💾 Memory Retrieval
                 retrieved = self.context.memory.retrieve(
@@ -141,6 +154,9 @@ class AgentLoop:
                     )
                     self.context.add_memory(memory_item)
 
+                    # Reset failure counter on success
+                    consecutive_failures = 0
+                    
                     # 🔁 Next query
                     query = f"""Original user task: {self.context.user_input}
 
@@ -154,7 +170,18 @@ class AgentLoop:
     Otherwise, return the next FUNCTION_CALL."""
                 except Exception as e:
                     print(f"[error] Tool execution failed: {e}")
-                    break
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_failures:
+                        print(f"[agent] Too many failures ({consecutive_failures}). Stopping.")
+                        self.context.final_answer = "FINAL_ANSWER: [Agent encountered errors and stopped]"
+                        break
+                    # Try to continue with next step
+                    query = f"""Original user task: {self.context.user_input}
+                    
+Error occurred in previous step: {e}
+
+Try a different approach or provide FINAL_ANSWER if task cannot be completed."""
+                    continue
 
         except Exception as e:
             print(f"[agent] Session failed: {e}")

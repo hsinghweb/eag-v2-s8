@@ -33,13 +33,18 @@ Available tools: {tool_context}
 
 Input: "{user_input}"
 
-Return the response as a Python dictionary with keys:
-- intent: (brief phrase about what the user wants)
-- entities: a list of strings representing keywords or values (e.g., ["INDIA", "ASCII"])
-- tool_hint: (name of the MCP tool that might be useful, if any)
-- user_input: same as above
+CRITICAL: Return ONLY valid JSON (no markdown, no explanations, no code blocks).
+Format: {{"intent": "...", "entities": ["keyword1", "keyword2"], "tool_hint": "...", "user_input": "..."}}
 
-Output only the dictionary on a single line. Do NOT wrap it in ```json or other formatting. Ensure `entities` is a list of strings, not a dictionary.
+Required keys:
+- intent: (brief phrase about what the user wants)
+- entities: a list of strings representing keywords or values (e.g., ["F1", "standings"])
+- tool_hint: (name of the MCP tool that might be useful, or null)
+- user_input: same as the input above
+
+Example output: {{"intent": "search for F1 standings", "entities": ["F1", "standings"], "tool_hint": "search", "user_input": "Find F1 standings"}}
+
+OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
 """
 
     try:
@@ -50,26 +55,56 @@ Output only the dictionary on a single line. Do NOT wrap it in ```json or other 
         if not raw or raw.lower() in ["none", "null", "undefined"]:
             raise ValueError("Empty or null model output")
 
-        # Clean and parse
-        clean = re.sub(r"^```json|```$", "", raw, flags=re.MULTILINE).strip()
-        import json
-
+        # Clean and parse - try multiple strategies
+        clean = re.sub(r"^```json|```$|```python", "", raw, flags=re.MULTILINE).strip()
+        # Remove any markdown code blocks
+        clean = re.sub(r"^```.*?```", "", clean, flags=re.MULTILINE | re.DOTALL).strip()
+        
+        # Try to extract JSON from response
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', clean)
+        if json_match:
+            clean = json_match.group(0)
+        
+        parsed = {}
         try:
-            parsed = json.loads(clean.replace("null", "null"))  # Clean up non-Python nulls
-        except Exception as json_error:
+            parsed = json.loads(clean)
+        except json.JSONDecodeError as json_error:
             print(f"[perception] JSON parsing failed: {json_error}")
-            parsed = {}
+            print(f"[perception] Raw response (first 200 chars): {raw[:200]}")
+            # Try to extract key-value pairs manually
+            intent_match = re.search(r'"intent"\s*:\s*"([^"]*)"', clean)
+            tool_hint_match = re.search(r'"tool_hint"\s*:\s*"([^"]*)"', clean)
+            if intent_match:
+                parsed["intent"] = intent_match.group(1)
+            if tool_hint_match:
+                parsed["tool_hint"] = tool_hint_match.group(1)
+            # Default fallback
+            parsed.setdefault("entities", [])
 
-        # Ensure Keys
+        # Ensure Keys with defaults
         if not isinstance(parsed, dict):
-            raise ValueError("Parsed LLM output is not a dict")
-        if "user_input" not in parsed:
-            parsed["user_input"] = user_input
-        if "intent" not in parsed:
-            parsed['intent'] = None
+            parsed = {}
+        
+        # Set defaults
+        parsed.setdefault("user_input", user_input)
+        parsed.setdefault("intent", None)
+        parsed.setdefault("tool_hint", None)
+        parsed.setdefault("entities", [])
+        
         # Fix common issues
         if isinstance(parsed.get("entities"), dict):
             parsed["entities"] = list(parsed["entities"].values())
+        elif not isinstance(parsed.get("entities"), list):
+            parsed["entities"] = []
+        
+        # Extract tool hint from user input if not provided
+        if not parsed.get("tool_hint") and user_input:
+            if "search" in user_input.lower() or "find" in user_input.lower():
+                parsed["tool_hint"] = "search"
+            elif "sheet" in user_input.lower() or "google" in user_input.lower():
+                parsed["tool_hint"] = "create_google_sheet"
+            elif "email" in user_input.lower() or "gmail" in user_input.lower():
+                parsed["tool_hint"] = "send_email"
 
         parsed["user_input"] = user_input  # overwrite or insert safely
         return PerceptionResult(**parsed)

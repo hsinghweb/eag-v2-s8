@@ -39,25 +39,56 @@ async def poll_and_process():
             # Use the Telegram tool to receive message
             response = await multi_mcp.call_tool("receive_telegram_message", {})
             
-            # Parse response
-            raw = getattr(response.content, 'text', str(response.content))
-            try:
-                import json
-                result_obj = json.loads(raw) if raw.strip().startswith("{") else raw
-            except json.JSONDecodeError:
-                result_obj = raw
+            # Parse response - handle TextContent objects
+            raw_text = getattr(response.content, 'text', None)
+            if raw_text is None:
+                raw_text = str(response.content)
             
-            # Extract message
-            if isinstance(result_obj, dict):
-                message = result_obj.get("message", "")
+            # Initialize variables
+            message = ""
+            chat_id = None
+            result_obj = {}
+            
+            # Clean up if it's a string representation of TextContent or contains TextContent
+            if "TextContent" in str(raw_text):
+                import re
+                import json
+                # Extract JSON content from TextContent string representation
+                # Look for full JSON object
+                json_match = re.search(r'\{"message":\s*"[^"]*",\s*"chat_id":\s*"[^"]*",\s*"message_id":\s*\d+\}', str(raw_text))
+                if json_match:
+                    try:
+                        result_obj = json.loads(json_match.group(0))
+                        message = result_obj.get("message", "")
+                        chat_id = result_obj.get("chat_id")
+                    except json.JSONDecodeError:
+                        # Fallback: extract message only
+                        msg_match = re.search(r'"message":\s*"([^"]*)"', str(raw_text))
+                        if msg_match:
+                            message = msg_match.group(1)
+                        chat_match = re.search(r'"chat_id":\s*"([^"]*)"', str(raw_text))
+                        if chat_match:
+                            chat_id = chat_match.group(1)
+                else:
+                    # Try to extract message and chat_id separately
+                    msg_match = re.search(r'"message":\s*"([^"]*)"', str(raw_text))
+                    if msg_match:
+                        message = msg_match.group(1)
+                    chat_match = re.search(r'"chat_id":\s*"([^"]*)"', str(raw_text))
+                    if chat_match:
+                        chat_id = chat_match.group(1)
             else:
-                # Try to parse as string
+                # Try parsing as JSON
                 try:
                     import json
-                    parsed = json.loads(raw)
-                    message = parsed.get("message", "")
-                except:
-                    message = str(result_obj)
+                    if raw_text.strip().startswith("{"):
+                        result_obj = json.loads(raw_text)
+                        message = result_obj.get("message", "") if isinstance(result_obj, dict) else ""
+                        chat_id = result_obj.get("chat_id") if isinstance(result_obj, dict) else None
+                    else:
+                        message = raw_text.strip()
+                except json.JSONDecodeError:
+                    message = raw_text.strip() if raw_text else ""
             
             if message and message.strip() and not message.startswith("ERROR"):
                 print(f"\n📩 Received Telegram message: {message}")
@@ -73,7 +104,6 @@ async def poll_and_process():
                     print("\n💡 Final Answer:\n", final_response.replace("FINAL_ANSWER:", "").strip())
                     
                     # Optionally send response back to Telegram
-                    chat_id = result_obj.get("chat_id") if isinstance(result_obj, dict) else None
                     if chat_id:
                         try:
                             await multi_mcp.call_tool("send_telegram_message", {
