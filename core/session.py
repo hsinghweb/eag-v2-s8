@@ -70,20 +70,28 @@ class SSEClient:
             # Parse response - SSE servers return JSON directly
             result = response.json()
             
+            # Extract the actual result from the response
+            tool_result = result.get("result")
+            if tool_result is None:
+                tool_result = result
+            
             # Return in format compatible with MCP TextContent
             class TextContent:
                 def __init__(self, text):
-                    self.text = text
+                    self.text = text if text is not None else ""
                     self.type = "text"
             
             class ToolResult:
                 def __init__(self, content):
-                    if isinstance(content, dict):
+                    if content is None:
+                        self.content = TextContent("")
+                    elif isinstance(content, dict):
+                        # Return as JSON string for consistent parsing
                         self.content = TextContent(json.dumps(content))
                     else:
                         self.content = TextContent(str(content))
             
-            return ToolResult(result.get("result", result))
+            return ToolResult(tool_result)
         except Exception as e:
             print(f"❌ SSE call_tool error: {e}")
             raise

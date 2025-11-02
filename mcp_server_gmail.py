@@ -61,6 +61,19 @@ def get_gmail_credentials():
     return creds
 
 
+def get_gmail_account_email():
+    """Get the email address associated with the Gmail account"""
+    try:
+        token_file = os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json")
+        if os.path.exists(token_file):
+            import json
+            with open(token_file, 'r') as f:
+                token_data = json.load(f)
+                return token_data.get("account", "")
+    except:
+        pass
+    return ""
+
 def initialize_gmail_service():
     """Initialize Gmail service on first use"""
     global gmail_service
@@ -68,7 +81,23 @@ def initialize_gmail_service():
         try:
             creds = get_gmail_credentials()
             gmail_service = build('gmail', 'v1', credentials=creds)
-            print("✅ Gmail service initialized", file=sys.stderr)
+            # Try to get profile to get email
+            try:
+                profile = gmail_service.users().getProfile(userId='me').execute()
+                email = profile.get('emailAddress', '')
+                if email:
+                    print(f"✅ Gmail service initialized for: {email}", file=sys.stderr)
+                    # Save email to token file
+                    token_file = os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json")
+                    if os.path.exists(token_file):
+                        import json
+                        with open(token_file, 'r') as f:
+                            token_data = json.load(f)
+                        token_data['account'] = email
+                        with open(token_file, 'w') as f:
+                            json.dump(token_data, f)
+            except:
+                print("✅ Gmail service initialized", file=sys.stderr)
         except Exception as e:
             print(f"❌ Failed to initialize Gmail service: {e}", file=sys.stderr)
             raise
@@ -97,6 +126,18 @@ def create_message(to: str, subject: str, body: str, link: str = None) -> dict:
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
     return {'raw': raw_message}
 
+
+def get_user_email():
+    """Helper to get user's Gmail email address"""
+    initialize_gmail_service()
+    email = get_gmail_account_email()
+    if not email:
+        try:
+            profile = gmail_service.users().getProfile(userId='me').execute()
+            email = profile.get('emailAddress', '')
+        except:
+            pass
+    return email
 
 @mcp.tool()
 def send_email(input: SendEmailInput) -> SendEmailOutput:
@@ -155,7 +196,32 @@ def send_email_with_link(to: str, subject: str, body: str, sheet_link: str) -> S
     """
     Send an email with a Google Sheet link.
     Usage: send_email_with_link|to="user@example.com"|subject="F1 Standings"|body="Here is your F1 standings sheet"|sheet_link="https://docs.google.com/spreadsheets/d/..."
+    
+    Note: If 'to' parameter is not provided or is "me", will use the authenticated Gmail account.
     """
+    # If 'to' is "me" or not provided, try to get from credentials
+    if not to or to.lower() in ["me", "", "self", "yourself", "<your_gmail_address>", "<your_email>"]:
+        # Initialize service to get email
+        initialize_gmail_service()
+        email = get_gmail_account_email()
+        if not email:
+            # Try to get from Gmail API profile
+            try:
+                profile = gmail_service.users().getProfile(userId='me').execute()
+                email = profile.get('emailAddress', '')
+            except:
+                pass
+        if email:
+            to = email
+            print(f"Using Gmail account email: {to}", file=sys.stderr)
+    
+    # If still no email, return error
+    if not to or to.lower() in ["me", "self", "yourself"]:
+        return SendEmailOutput(
+            message_id="",
+            success=False
+        )
+    
     return send_email(SendEmailInput(to=to, subject=subject, body=body, link=sheet_link))
 
 

@@ -86,12 +86,15 @@ async def startup():
     global sheets_service, drive_service
     try:
         creds = get_google_credentials()
-        sheets_service = build('sheets', 'v4', credentials=creds)
-        drive_service = build('drive', 'v3', credentials=creds)
-        print("✅ Google Sheets/Drive services initialized")
+        if creds:
+            sheets_service = build('sheets', 'v4', credentials=creds)
+            drive_service = build('drive', 'v3', credentials=creds)
+            print("✅ Google Sheets/Drive services initialized", file=sys.stderr)
+        else:
+            print("⚠️ No credentials available on startup. Services will be initialized on first tool call.", file=sys.stderr)
     except Exception as e:
-        print(f"❌ Failed to initialize Google services: {e}")
-        sys.exit(1)
+        print(f"⚠️ Failed to initialize Google services: {e}", file=sys.stderr)
+        print("⚠️ Services will be initialized on first tool call", file=sys.stderr)
 
 
 # MCP Protocol Endpoints
@@ -177,8 +180,26 @@ async def call_tool(request: ToolCallRequest):
 # Tool Implementations
 async def create_google_sheet(args: Dict[str, Any]) -> Dict[str, str]:
     """Create a new Google Spreadsheet"""
+    global sheets_service, drive_service
+    
+    # Ensure services are initialized
+    if sheets_service is None or drive_service is None:
+        try:
+            creds = get_google_credentials()
+            sheets_service = build('sheets', 'v4', credentials=creds)
+            drive_service = build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            raise Exception(f"Failed to initialize Google services: {e}")
+    
     try:
-        title = args.get("title") or args.get("input", {}).get("title", "Untitled Spreadsheet")
+        # Handle nested input structure
+        if "input" in args and isinstance(args["input"], dict):
+            title = args["input"].get("title", "Untitled Spreadsheet")
+        else:
+            title = args.get("title", "Untitled Spreadsheet")
+        
+        if not title:
+            title = "Untitled Spreadsheet"
         
         spreadsheet = {
             'properties': {
@@ -191,9 +212,12 @@ async def create_google_sheet(args: Dict[str, Any]) -> Dict[str, str]:
         sheet_id = spreadsheet.get('spreadsheetId')
         sheet_url = spreadsheet.get('spreadsheetUrl')
         
+        if not sheet_id:
+            raise Exception("Failed to get sheet_id from Google Sheets API response")
+        
         return {
             "sheet_id": sheet_id,
-            "sheet_url": sheet_url
+            "sheet_url": sheet_url or f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
         }
     except HttpError as error:
         raise Exception(f"Google Sheets API error: {error}")
@@ -203,6 +227,16 @@ async def create_google_sheet(args: Dict[str, Any]) -> Dict[str, str]:
 
 async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
     """Add data to a Google Sheet"""
+    global sheets_service
+    
+    # Ensure services are initialized
+    if sheets_service is None:
+        try:
+            creds = get_google_credentials()
+            sheets_service = build('sheets', 'v4', credentials=creds)
+        except Exception as e:
+            raise Exception(f"Failed to initialize Google Sheets service: {e}")
+    
     try:
         # Handle both direct args and nested input
         if "input" in args:
@@ -241,6 +275,16 @@ async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
 
 async def get_sheet_link(args: Dict[str, Any]) -> Dict[str, str]:
     """Get shareable link for a Google Sheet"""
+    global drive_service
+    
+    # Ensure services are initialized
+    if drive_service is None:
+        try:
+            creds = get_google_credentials()
+            drive_service = build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            raise Exception(f"Failed to initialize Google Drive service: {e}")
+    
     try:
         if "input" in args:
             sheet_id = args["input"].get("sheet_id")
@@ -263,6 +307,16 @@ async def get_sheet_link(args: Dict[str, Any]) -> Dict[str, str]:
 
 async def share_sheet(args: Dict[str, Any]) -> Dict[str, str]:
     """Share a Google Sheet with an email"""
+    global drive_service
+    
+    # Ensure services are initialized
+    if drive_service is None:
+        try:
+            creds = get_google_credentials()
+            drive_service = build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            raise Exception(f"Failed to initialize Google Drive service: {e}")
+    
     try:
         if "input" in args:
             sheet_id = args["input"].get("sheet_id")

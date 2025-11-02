@@ -100,23 +100,50 @@ async def poll_and_process():
                 )
                 
                 try:
-                    final_response = await agent.run()
-                    print("\n💡 Final Answer:\n", final_response.replace("FINAL_ANSWER:", "").strip())
-                    
-                    # Optionally send response back to Telegram
+                    # Send progress message to Telegram
                     if chat_id:
                         try:
                             await multi_mcp.call_tool("send_telegram_message", {
                                 "input": {
                                     "chat_id": chat_id,
-                                    "text": f"✅ Completed!\n\n{final_response.replace('FINAL_ANSWER:', '').strip()}"
+                                    "text": "🔄 Processing your request... This may take a few steps."
+                                }
+                            })
+                        except:
+                            pass  # Don't fail if telegram send fails
+                    
+                    final_response = await agent.run()
+                    answer_text = final_response.replace("FINAL_ANSWER:", "").strip()
+                    print("\n💡 Final Answer:\n", answer_text)
+                    
+                    # Send final response back to Telegram
+                    if chat_id:
+                        try:
+                            await multi_mcp.call_tool("send_telegram_message", {
+                                "input": {
+                                    "chat_id": chat_id,
+                                    "text": f"✅ Task Completed!\n\n{answer_text}"
                                 }
                             })
                         except Exception as e:
                             log("error", f"Failed to send Telegram response: {e}")
                 
                 except Exception as e:
+                    error_msg = f"Agent encountered an error: {str(e)[:200]}"
+                    print(f"\n❌ {error_msg}")
                     log("fatal", f"Agent failed: {e}")
+                    
+                    # Send error message to Telegram
+                    if chat_id:
+                        try:
+                            await multi_mcp.call_tool("send_telegram_message", {
+                                "input": {
+                                    "chat_id": chat_id,
+                                    "text": f"❌ Error occurred: {error_msg}"
+                                }
+                            })
+                        except:
+                            pass
             
             # Poll interval
             await asyncio.sleep(5)  # Check every 5 seconds

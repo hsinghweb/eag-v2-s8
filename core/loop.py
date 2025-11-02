@@ -33,6 +33,8 @@ class AgentLoop:
             query = self.context.user_input
             consecutive_failures = 0
             max_failures = 2  # Allow 2 consecutive failures before giving up
+            last_tool_call = None  # Track last tool call to detect loops
+            repeated_calls = 0  # Count repeated tool calls
 
             for step in range(max_steps):
                 self.context.step = step
@@ -120,11 +122,47 @@ class AgentLoop:
                     else:
                         self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
                     break
+                
+                # Force completion if we're at the last step
+                if step >= max_steps - 1:
+                    print(f"[agent] ⚠️ Reached step {step + 1} of {max_steps}. Forcing completion.")
+                    # Try to get summary of what was done
+                    completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                    summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
+                    self.context.final_answer = f"FINAL_ANSWER: [Task partially completed due to step limit. {summary}. Last plan: {plan[:100]}...]"
+                    break
 
 
                 # ⚙️ Tool Execution
                 try:
                     tool_name, arguments = parse_function_call(plan)
+                    
+                    # Detect repeated tool calls (potential loop)
+                    current_call = f"{tool_name}_{str(arguments)[:50]}"
+                    if last_tool_call == current_call:
+                        repeated_calls += 1
+                        if repeated_calls >= 2:
+                            print(f"[agent] ⚠️ Detected loop: same tool call repeated {repeated_calls} times")
+                            print(f"[agent] Forcing completion to break loop")
+                            completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                            summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
+                            self.context.final_answer = f"FINAL_ANSWER: [Loop detected. Task partially completed. {summary}. Attempting to force next step.]"
+                            # Try to skip to next logical step
+                            if "search" in tool_name.lower():
+                                query = f"""Original user task: {self.context.user_input}
+
+Search completed. Now proceed to create Google Sheet with the data found.
+
+If you have search results, use create_google_sheet tool next.
+If sheet already created, use add_data_to_sheet next.
+Otherwise, provide FINAL_ANSWER with what was accomplished."""
+                                repeated_calls = 0  # Reset counter
+                                last_tool_call = None
+                                continue
+                            break
+                    else:
+                        repeated_calls = 0
+                        last_tool_call = current_call
 
                     if self.tool_expects_input(tool_name):
                         tool_input = {'input': arguments} if not (isinstance(arguments, dict) and 'input' in arguments) else arguments
@@ -134,14 +172,30 @@ class AgentLoop:
                     response = await self.mcp.call_tool(tool_name, tool_input)
 
                     # ✅ Safe TextContent parsing
-                    raw = getattr(response.content, 'text', str(response.content))
+                    raw = getattr(response.content, 'text', None)
+                    if raw is None:
+                        raw = str(response.content)
+                    
+                    # Handle empty or None raw
+                    if not raw:
+                        raw = "{}"
+                    
                     try:
-                        result_obj = json.loads(raw) if raw.strip().startswith("{") else raw
-                    except json.JSONDecodeError:
-                        result_obj = raw
+                        if isinstance(raw, str) and raw.strip().startswith("{"):
+                            result_obj = json.loads(raw)
+                        else:
+                            result_obj = raw
+                    except (json.JSONDecodeError, AttributeError):
+                        result_obj = {"result": str(raw) if raw else "No response"}
 
-                    result_str = result_obj.get("markdown") if isinstance(result_obj, dict) else str(result_obj)
-                    print(f"[action] {tool_name} → {result_str}")
+                    result_str = result_obj.get("markdown") if isinstance(result_obj, dict) else str(result_obj) if result_obj else "No result"
+                    
+                    # Truncate very long results for readability
+                    if result_str and len(result_str) > 500:
+                        display_result = result_str[:500] + "... [truncated]"
+                    else:
+                        display_result = result_str
+                    print(f"[action] {tool_name} → {display_result}")
 
                     # 🧠 Add memory
                     memory_item = MemoryItem(
@@ -157,17 +211,54 @@ class AgentLoop:
                     # Reset failure counter on success
                     consecutive_failures = 0
                     
-                    # 🔁 Next query
+                    # 🔁 Next query - Provide workflow guidance
+                    # Check what tools have been used
+                    used_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                    
+                    workflow_guidance = ""
+                    if "search" in tool_name.lower() or "search_documents" in tool_name.lower():
+                        workflow_guidance = "\n\nNEXT: You should create a Google Sheet to store this data. Use: create_google_sheet|input.title=\"F1 Standings\""
+                    elif "create_google_sheet" in tool_name.lower():
+                        # Extract sheet_id from result
+                        sheet_id = ""
+                        if isinstance(result_obj, dict):
+                            sheet_id = result_obj.get("sheet_id") or result_obj.get("sheetId", "")
+                        if sheet_id:
+                            workflow_guidance = f"\n\nNEXT: Add data to the sheet using: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Driver\",\"Points\"],[...]]"
+                    elif "add_data_to_sheet" in tool_name.lower():
+                        # Get sheet_id from arguments
+                        sheet_id = ""
+                        if isinstance(arguments, dict):
+                            if "input" in arguments and isinstance(arguments["input"], dict):
+                                sheet_id = arguments["input"].get("sheet_id", "")
+                            else:
+                                sheet_id = arguments.get("sheet_id", "")
+                        if sheet_id:
+                            workflow_guidance = f"\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\""
+                    elif "get_sheet_link" in tool_name.lower():
+                        # Extract link from result
+                        sheet_link = ""
+                        if isinstance(result_obj, dict):
+                            sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "")
+                        if sheet_link:
+                            workflow_guidance = f"\n\nNEXT: Send email with link using: send_email_with_link|to=<your_gmail_address>|subject=\"F1 Standings\"|body=\"Here is the F1 standings sheet\"|sheet_link=\"{sheet_link}\"\n\nNOTE: Replace <your_gmail_address> with your actual Gmail address (the one you used for OAuth setup)."
+                    
                     query = f"""Original user task: {self.context.user_input}
 
-    Your last tool produced this result:
+    Tools used so far: {', '.join(set(used_tools))}
+    
+    Your last tool ({tool_name}) produced this result:
 
-    {result_str}
+    {result_str[:1000]}{'...' if len(result_str) > 1000 else ''}
+    
+    {workflow_guidance}
+    
+    Step: {step + 2} of {max_steps}
+    
+    If ALL steps are complete (search → create sheet → add data → get link → send email), return:
+    FINAL_ANSWER: [Task completed successfully. Summary: <what was done>]
 
-    If this fully answers the task, return:
-    FINAL_ANSWER: your answer
-
-    Otherwise, return the next FUNCTION_CALL."""
+    Otherwise, return the next FUNCTION_CALL to continue the workflow."""
                 except Exception as e:
                     print(f"[error] Tool execution failed: {e}")
                     consecutive_failures += 1
