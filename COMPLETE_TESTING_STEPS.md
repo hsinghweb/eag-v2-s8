@@ -19,13 +19,11 @@ python -m pip install google-auth google-auth-oauthlib google-auth-httplib2 goog
 Open a terminal and run:
 
 ```bash
-# Required models (all small, under 3B parameters)
+# Required models
 ollama pull nomic-embed-text
-ollama pull llama3.2:1b-instruct
+ollama pull phi3:mini
 
-# Optional - for image captioning (if you have space)
-ollama pull llava:3.8b
-# OR if 3.8B is too large:
+# Optional - for image captioning
 ollama pull gemma2:2b
 ```
 

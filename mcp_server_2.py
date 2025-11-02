@@ -31,10 +31,10 @@ EMBED_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 EMBED_MODEL = "nomic-embed-text"
-# Note: For vision, if gemma2:2b doesn't support images, try: llava:3.8b or llava:7b
-# If no vision model available, image captioning will be skipped
-GEMMA_MODEL = "gemma2:2b"  # Smaller model (2B parameters) - may not support vision
-PHI_MODEL = "llama3.2:1b-instruct"  # Smaller chunking model (1B parameters)
+# Note: Vision models are optional. If gemma2:2b doesn't support images, image captioning will be skipped gracefully.
+# Alternative vision models you can try: llava, llava2, bakllava (check with: ollama list | grep llava)
+GEMMA_MODEL = "gemma2:2b"  # Smaller model (2B parameters) - may not support vision, code handles this gracefully
+PHI_MODEL = "phi3:mini"  # Smaller chunking model (works well for semantic chunking)
 CHUNK_SIZE = 256
 CHUNK_OVERLAP = 40
 MAX_CHUNK_LENGTH = 512  # characters
