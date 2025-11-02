@@ -31,8 +31,10 @@ EMBED_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 EMBED_MODEL = "nomic-embed-text"
-GEMMA_MODEL = "gemma3:12b"
-PHI_MODEL = "phi4:latest"
+# Note: For vision, if gemma2:2b doesn't support images, try: llava:3.8b or llava:7b
+# If no vision model available, image captioning will be skipped
+GEMMA_MODEL = "gemma2:2b"  # Smaller model (2B parameters) - may not support vision
+PHI_MODEL = "llama3.2:1b-instruct"  # Smaller chunking model (1B parameters)
 CHUNK_SIZE = 256
 CHUNK_OVERLAP = 40
 MAX_CHUNK_LENGTH = 512  # characters
@@ -138,7 +140,8 @@ def caption_image(img_url_or_path: str) -> str:
             "prompt": "If there is lot of text in the image, then ONLY reply back with exact text in the image, else Describe the image such that your response can replace 'alt-text' for it. Only explain the contents of the image and provide no further explaination.",
             "images": [encoded_image],
             "stream": True
-        }, stream=True) as response:
+        }, stream=True, timeout=30) as response:
+            response.raise_for_status()
 
             caption_parts = []
             for line in response.iter_lines():
@@ -156,9 +159,16 @@ def caption_image(img_url_or_path: str) -> str:
             mcp_log("CAPTION", f"✅ Caption generated: {caption}")
             return caption if caption else "[No caption returned]"
 
+    except requests.exceptions.HTTPError as e:
+        # Model might not support vision - return image reference instead
+        if e.response.status_code == 400:
+            mcp_log("WARN", f"⚠️ Model {GEMMA_MODEL} may not support vision. Skipping caption.")
+            return f"[Image: {img_url_or_path} - Vision model not available]"
+        raise
     except Exception as e:
         mcp_log("ERROR", f"⚠️ Failed to caption image {img_url_or_path}: {e}")
-        return f"[Image could not be processed: {img_url_or_path}]"
+        # Return image reference instead of error
+        return f"[Image: {img_url_or_path}]"
 
 
 

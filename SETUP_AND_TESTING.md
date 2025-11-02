@@ -6,10 +6,10 @@ This guide walks you through setting up and testing the F1 Standings → Google 
 
 1. **Python 3.11+** with `uv` package manager
 2. **Ollama** running locally on `http://localhost:11434`
-3. Required Ollama models:
-   - `nomic-embed-text` (for embeddings)
-   - `gemma3:12b` or `gemma3:8b` (for image captioning)
-   - `phi4` (for semantic chunking)
+3. Required Ollama models (all under 3B parameters):
+   - `nomic-embed-text` (for embeddings - ~137M parameters)
+   - `gemma2:2b` (for image captioning - ~2B parameters)
+   - `llama3.2:1b-instruct` (for semantic chunking - ~1B parameters)
 4. **Telegram Bot** (created via @BotFather)
 5. **Google Cloud Project** with APIs enabled:
    - Gmail API
@@ -153,10 +153,10 @@ Make sure Ollama is running and has the required models:
 # Check if Ollama is running
 curl http://localhost:11434/api/tags
 
-# Install missing models
+# Install missing models (all under 3B parameters)
 ollama pull nomic-embed-text
-ollama pull gemma3:12b
-ollama pull phi4
+ollama pull gemma2:2b
+ollama pull llama3.2:1b-instruct
 ```
 
 ---

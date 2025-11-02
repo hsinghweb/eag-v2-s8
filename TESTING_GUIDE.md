@@ -63,7 +63,7 @@ The agent will:
 
 ### Before Testing
 - [ ] Ollama running on `http://localhost:11434`
-- [ ] Required models installed: `nomic-embed-text`, `gemma3:12b`, `phi4`
+- [ ] Required models installed: `nomic-embed-text`, `gemma2:2b`, `llama3.2:1b-instruct`
 - [ ] Telegram bot created and token in `.env`
 - [ ] Google credentials files downloaded
 - [ ] OAuth tokens generated (`gmail_token.json`, `token.json`)
