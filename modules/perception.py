@@ -16,6 +16,8 @@ class PerceptionResult(BaseModel):
     intent: Optional[str]
     entities: List[str] = []
     tool_hint: Optional[str] = None
+    scope_limit: Optional[int] = None  # e.g., top 10, top 20, etc.
+    scope_type: Optional[str] = None  # e.g., "top", "recent", "current", "latest"
 
 
 async def extract_perception(user_input: str) -> PerceptionResult:
@@ -34,15 +36,26 @@ Available tools: {tool_context}
 Input: "{user_input}"
 
 CRITICAL: Return ONLY valid JSON (no markdown, no explanations, no code blocks).
-Format: {{"intent": "...", "entities": ["keyword1", "keyword2"], "tool_hint": "...", "user_input": "..."}}
+Format: {{"intent": "...", "entities": ["keyword1", "keyword2"], "tool_hint": "...", "user_input": "...", "scope_limit": 10, "scope_type": "top"}}
 
 Required keys:
 - intent: (brief phrase about what the user wants)
-- entities: a list of strings representing keywords or values (e.g., ["F1", "standings"])
+- entities: a list of strings representing keywords or values (e.g., ["standings", "rankings"], ["scores", "results"], ["prices", "stocks"])
 - tool_hint: (name of the MCP tool that might be useful, or null)
 - user_input: same as the input above
+- scope_limit: (number indicating how many results to retrieve, e.g., 10, 20, null if not specified)
+- scope_type: (type of scope: "top", "recent", "current", "latest", null if not specified)
 
-Example output: {{"intent": "search for F1 standings", "entities": ["F1", "standings"], "tool_hint": "search", "user_input": "Find F1 standings"}}
+SCOPE LOGIC:
+- If user asks for "standings", "rankings", "leaderboard" → default to scope_limit: 10, scope_type: "top"
+- If user says "top 20" or "top 10" → extract the number and set scope_limit
+- If user says "current" or "latest" → set scope_type: "current", scope_limit: 10
+- If user says "all" or doesn't specify → scope_limit: null, scope_type: null
+
+Example outputs:
+{{"intent": "search for current standings", "entities": ["standings", "rankings"], "tool_hint": "search", "user_input": "Find current standings", "scope_limit": 10, "scope_type": "top"}}
+{{"intent": "find top 20 players", "entities": ["players", "rankings"], "tool_hint": "search", "user_input": "Find top 20 players", "scope_limit": 20, "scope_type": "top"}}
+{{"intent": "get latest scores", "entities": ["scores", "results"], "tool_hint": "search", "user_input": "Get latest scores", "scope_limit": 10, "scope_type": "current"}}
 
 OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
 """
@@ -90,6 +103,25 @@ OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
         parsed.setdefault("intent", None)
         parsed.setdefault("tool_hint", None)
         parsed.setdefault("entities", [])
+        parsed.setdefault("scope_limit", None)
+        parsed.setdefault("scope_type", None)
+        
+        # Auto-detect scope for common queries
+        if not parsed.get("scope_limit") and not parsed.get("scope_type"):
+            user_lower = user_input.lower()
+            # Check for explicit numbers
+            import re
+            top_match = re.search(r'top\s+(\d+)', user_lower)
+            if top_match:
+                parsed["scope_limit"] = int(top_match.group(1))
+                parsed["scope_type"] = "top"
+            elif any(word in user_lower for word in ["standings", "rankings", "leaderboard", "points"]):
+                # Default to top 10 for standings/rankings queries
+                parsed["scope_limit"] = 10
+                parsed["scope_type"] = "top"
+            elif any(word in user_lower for word in ["current", "latest", "recent"]):
+                parsed["scope_type"] = "current"
+                parsed["scope_limit"] = 10
         
         # Fix common issues
         if isinstance(parsed.get("entities"), dict):
@@ -107,6 +139,14 @@ OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
                 parsed["tool_hint"] = "send_email"
 
         parsed["user_input"] = user_input  # overwrite or insert safely
+        
+        # Ensure scope_limit is int or None
+        if parsed.get("scope_limit") is not None:
+            try:
+                parsed["scope_limit"] = int(parsed["scope_limit"])
+            except (ValueError, TypeError):
+                parsed["scope_limit"] = None
+        
         return PerceptionResult(**parsed)
 
 

@@ -62,24 +62,37 @@ Respond in **exactly one line** using one of the following formats:
 🎯 User Request: "{perception.user_input}"
 - Intent: {perception.intent or 'Not specified'}
 - Tool hint: {perception.tool_hint or 'None'}
+- Scope: {f"top {perception.scope_limit}" if perception.scope_limit else "no limit"} ({perception.scope_type or 'not specified'})
 
-📋 WORKFLOW GUIDANCE:
-For "Find F1 Standings and put in Google Sheet, then email":
-1. First: FUNCTION_CALL: search|query="F1 current point standings 2024" (or search_documents)
-2. Then: FUNCTION_CALL: create_google_sheet|input.title="F1 Standings"
-3. Then: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[header1,header2],[row1col1,row1col2],...]
-   - CRITICAL: Extract driver names and points from search results (look in memory above)
-   - Format as 2D array: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"],...]
-   - Use EXACT sheet_id from create_google_sheet result (check memory above - look for sheet_id in STRUCTURED_DATA)
-   - Example: If search shows "Max Verstappen 575 points", format as: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"]]
-4. Then: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
-5. Then: FUNCTION_CALL: send_email_with_link|to=<use Gmail account email>|subject="F1 Standings"|body="Here is the F1 standings sheet"|sheet_link=<from step 4>
+📋 WORKFLOW GUIDANCE (Generic for ANY query):
+For ANY user query, follow this standardized workflow:
+1. Search: FUNCTION_CALL: search|query="<enhanced query with scope>" (or search_documents)
+   - Enhance query with scope: If scope_limit is {perception.scope_limit or 'not specified'}, add "top {perception.scope_limit or 10}" to query
+   - Example: If user asks "current standings" with scope_limit=10 → query="current standings top 10"
+   - Example: If user asks "latest scores" with scope_limit=20 → query="latest scores top 20"
+   - Example: If user asks "stock prices" with scope_limit=15 → query="current stock prices top 15"
+2. Create Sheet: FUNCTION_CALL: create_google_sheet|input.title="<relevant title based on query>"
+   - Title should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Stock Prices", "Weather Data")
+   - Generate title from query entities or keywords
+3. Add Data: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[header1,header2],[row1col1,row1col2],...]
+   - CRITICAL: Extract relevant data from search results (look in memory above)
+   - Limit to {perception.scope_limit or 10} rows if scope_limit is set
+   - Format as 2D array with headers in first row, data rows following
+   - Use EXACT sheet_id from create_google_sheet result (check memory - look for sheet_id in STRUCTURED_DATA)
+   - Example formats: [["Name","Value"],["Item1","100"],["Item2","200"],...] OR [["Rank","Team","Score"],["1","TeamA","95"],["2","TeamB","87"],...]
+   - Headers should match the data type (e.g., Name/Value for generic data, Rank/Team/Score for rankings, Date/Price for stocks)
+4. Get Link: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
+5. Send Email: FUNCTION_CALL: send_email_with_link|to=<email from .env>|subject="<relevant subject>"|body="<relevant body>"|sheet_link=<from step 4>
+   - Subject should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Data Results")
+   - Body should mention what data is in the sheet
+   - Use the email address from .env file (GMAIL_USER_EMAIL)
 6. Finally: FINAL_ANSWER: [Task completed. Sheet created at <link> and emailed to <email>]
 
 IMPORTANT: 
-- For step 3: Extract driver names and points from search results. Create a 2D array with headers ["Driver","Points"] and rows like [["Max Verstappen","575"],["Lewis Hamilton","234"]]
-- For step 5: Use the same email address associated with your Gmail account (the one you used for OAuth).
+- For step 3: Extract ONLY the top {perception.scope_limit or 10} results if scope_limit is set. Limit data rows accordingly.
+- For step 5: Use GMAIL_USER_EMAIL from .env file (do NOT use "me" or placeholder)
 - ALWAYS use the sheet_id from the create_google_sheet result when calling add_data_to_sheet and get_sheet_link
+- This workflow applies to ANY query type - extract data patterns, create relevant headers, and format accordingly
 
 ---
 

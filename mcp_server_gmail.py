@@ -128,7 +128,13 @@ def create_message(to: str, subject: str, body: str, link: str = None) -> dict:
 
 
 def get_user_email():
-    """Helper to get user's Gmail email address"""
+    """Helper to get user's Gmail email address from .env or OAuth token"""
+    # First try to get from .env
+    email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
+    if email_from_env:
+        return email_from_env
+    
+    # Fallback to OAuth account email
     initialize_gmail_service()
     email = get_gmail_account_email()
     if not email:
@@ -199,21 +205,20 @@ def send_email_with_link(to: str, subject: str, body: str, sheet_link: str) -> S
     
     Note: If 'to' parameter is not provided or is "me", will use the authenticated Gmail account.
     """
-    # If 'to' is "me" or not provided, try to get from credentials
-    if not to or to.lower() in ["me", "", "self", "yourself", "<your_gmail_address>", "<your_email>"]:
-        # Initialize service to get email
-        initialize_gmail_service()
-        email = get_gmail_account_email()
-        if not email:
-            # Try to get from Gmail API profile
-            try:
-                profile = gmail_service.users().getProfile(userId='me').execute()
-                email = profile.get('emailAddress', '')
-            except:
-                pass
-        if email:
-            to = email
-            print(f"Using Gmail account email: {to}", file=sys.stderr)
+    # If 'to' is "me" or not provided, try to get from .env or credentials
+    if not to or to.lower() in ["me", "", "self", "yourself", "<your_gmail_address>", "<your_email>", "<gmail_user_email_from_env>"]:
+        # First try .env file
+        email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
+        if email_from_env:
+            to = email_from_env
+            print(f"Using Gmail email from .env: {to}", file=sys.stderr)
+        else:
+            # Fallback to OAuth account email
+            initialize_gmail_service()
+            email = get_user_email()  # This already checks .env first
+            if email:
+                to = email
+                print(f"Using Gmail account email: {to}", file=sys.stderr)
     
     # If still no email, return error
     if not to or to.lower() in ["me", "self", "yourself"]:

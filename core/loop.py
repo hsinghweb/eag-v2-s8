@@ -14,6 +14,7 @@ class AgentLoop:
     def __init__(self, user_input: str, dispatcher: MultiMCP):
         self.context = AgentContext(user_input)
         self.mcp = dispatcher
+        self.current_perception = None  # Store current perception for scope limits
         self.tools = dispatcher.get_all_tools()
 
     def tool_expects_input(self, tool_name: str) -> bool:
@@ -94,7 +95,13 @@ class AgentLoop:
                 if not hasattr(perception, 'user_input') or not perception.user_input:
                     perception.user_input = query
                 
-                print(f"[perception] Intent: {perception.intent or 'None'}, Hint: {perception.tool_hint or 'None'}")
+                # Store perception for later use (scope limits, etc.)
+                self.current_perception = perception
+                
+                scope_info = ""
+                if hasattr(perception, 'scope_limit') and perception.scope_limit:
+                    scope_info = f", Scope: top {perception.scope_limit}"
+                print(f"[perception] Intent: {perception.intent or 'None'}, Hint: {perception.tool_hint or 'None'}{scope_info}")
 
                 # 💾 Memory Retrieval
                 retrieved = self.context.memory.retrieve(
@@ -221,9 +228,18 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                     # Check what tools have been used
                     used_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
                     
+                    # Get scope limits from current perception
+                    scope_limit = None
+                    if self.current_perception and hasattr(self.current_perception, 'scope_limit'):
+                        scope_limit = self.current_perception.scope_limit
+                    
                     workflow_guidance = ""
                     if "search" in tool_name.lower() or "search_documents" in tool_name.lower():
-                        workflow_guidance = "\n\nNEXT: You should create a Google Sheet to store this data. Use: create_google_sheet|input.title=\"F1 Standings\""
+                        # Generic title based on query
+                        title_suggestion = "Data Results"
+                        if self.current_perception and self.current_perception.entities:
+                            title_suggestion = " ".join(self.current_perception.entities[:2]).title()
+                        workflow_guidance = f"\n\nNEXT: Create a Google Sheet to store this data. Use: create_google_sheet|input.title=\"{title_suggestion}\""
                     elif "create_google_sheet" in tool_name.lower():
                         # Extract sheet_id from result
                         sheet_id = ""
@@ -239,7 +255,8 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                                         search_results = str(mem.text)[:500]
                                         break
                             
-                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract F1 driver standings from search results and add to sheet.\nUse: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Driver\",\"Points\"],[\"Max Verstappen\",\"575\"],[\"Lewis Hamilton\",\"234\"],...]\n\nIMPORTANT: Extract actual driver names and points from search results above. Format as 2D array with headers [\"Driver\",\"Points\"] followed by rows of [driver_name, points]."
+                            limit_text = f"top {scope_limit}" if scope_limit else "all available"
+                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract data from search results and add to sheet ({limit_text} results).\nUse: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],...]\n\nIMPORTANT: Extract relevant data from search results above. Format as 2D array with headers in first row, data rows following. Limit to {scope_limit} rows if scope_limit is set."
                     elif "add_data_to_sheet" in tool_name.lower():
                         # Get sheet_id from arguments
                         sheet_id = ""
@@ -256,7 +273,21 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                         if isinstance(result_obj, dict):
                             sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "")
                         if sheet_link:
-                            workflow_guidance = f"\n\nNEXT: Send email with link using: send_email_with_link|to=<your_gmail_address>|subject=\"F1 Standings\"|body=\"Here is the F1 standings sheet\"|sheet_link=\"{sheet_link}\"\n\nNOTE: Replace <your_gmail_address> with your actual Gmail address (the one you used for OAuth setup)."
+                            # Get email from .env or use placeholder
+                            import os
+                            from dotenv import load_dotenv
+                            load_dotenv()
+                            email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
+                            if email_from_env:
+                                email_to_use = email_from_env
+                            else:
+                                email_to_use = "<GMAIL_USER_EMAIL_from_env>"
+                            
+                            subject_suggestion = "Data Results"
+                            if self.current_perception and self.current_perception.entities:
+                                subject_suggestion = " ".join(self.current_perception.entities[:2]).title()
+                            
+                            workflow_guidance = f"\n\nNEXT: Send email with link using: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet\"|sheet_link=\"{sheet_link}\"\n\nNOTE: Use GMAIL_USER_EMAIL from .env file (or leave empty to auto-detect)."
                     
                     # Get search results for data extraction context
                     search_context = ""
@@ -281,10 +312,15 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
     Step: {step + 2} of {max_steps}
     
     CRITICAL INSTRUCTIONS:
-    - If you just created a sheet, you MUST extract driver names and points from search results above
-    - Look for patterns like "Max Verstappen 575" or "1. Max Verstappen - 575 points" in search results
-    - Format data as: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"],["Charles Leclerc","201"],...]
-    - Extract at least top 5-10 drivers with their points
+    - If you just created a sheet, you MUST extract relevant data from search results above
+    - Look for patterns in search results (e.g., rankings, standings, scores, lists, tables, key-value pairs)
+    - Format data as: [["Header1","Header2"],["Row1Col1","Row1Col2"],["Row2Col1","Row2Col2"],...]
+    - Limit to {scope_limit} rows if scope_limit is set (currently: {scope_limit or 'no limit'})
+    - Extract headers based on the data type found in search results:
+      * For rankings/standings: ["Rank","Name","Value"] or ["Position","Item","Score"]
+      * For lists/tables: ["Name","Value"] or ["Key","Data"]
+      * For time-based data: ["Date","Value"] or ["Time","Metric"]
+      * For generic data: ["Column1","Column2","Column3"] based on what's in the results
     - Use the EXACT sheet_id from the create_google_sheet result above (it's in the STRUCTURED_DATA section)
     - Do NOT skip this step - adding data is required!
     
