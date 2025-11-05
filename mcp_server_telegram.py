@@ -57,8 +57,9 @@ def initialize_telegram_offset():
     """
     Initialize by fetching all pending updates and acknowledging them.
     This ensures we start fresh and only process NEW messages after startup.
+    IMPORTANT: This should NOT queue any messages - only acknowledge old ones.
     """
-    global _last_update_id, _processed_update_ids
+    global _last_update_id, _processed_update_ids, _processed_message_ids
     try:
         mcp_log("INFO", "Initializing Telegram - fetching and acknowledging pending updates...")
         # Get all pending updates without offset (gets everything)
@@ -74,6 +75,13 @@ def initialize_telegram_offset():
                     max_update_id = max(max_update_id, update_id)
                     # Mark all old updates as processed so they won't be queued
                     _processed_update_ids.add(update_id)
+                    
+                    # Also mark message IDs as processed to avoid queuing them
+                    message = update.get("message")
+                    if message:
+                        message_id = message.get("message_id")
+                        if message_id:
+                            _processed_message_ids.add(message_id)
                 
                 _last_update_id = max_update_id
                 mcp_log("INFO", f"Acknowledged {len(updates)} pending updates. Last update_id: {_last_update_id}")
@@ -173,10 +181,9 @@ def receive_telegram_message() -> TelegramMessageOutput:
         initialize_telegram_offset()
         receive_telegram_message._initialized = True
         mcp_log("INFO", f"Offset initialized. Last update_id: {_last_update_id}")
-        # Poll immediately after initialization to catch any messages that arrived during init
-        mcp_log("INFO", "Polling for messages immediately after initialization...")
-        poll_telegram_messages()
-        mcp_log("INFO", f"After initialization poll: Queue size = {len(_message_queue)}")
+        # Don't poll immediately after initialization - let the normal polling happen
+        # This ensures we only get messages that arrive AFTER initialization
+        mcp_log("INFO", "Initialization complete. Ready to receive new messages.")
     
     # Always poll for new messages (important: poll every time to catch new messages)
     poll_telegram_messages()
