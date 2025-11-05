@@ -29,6 +29,14 @@ class AgentLoop:
             'data_added': False,
             'link_retrieved': False
         }
+        
+        # Track created sheet to prevent multiple creations
+        self._created_sheet_id = None
+        self._created_sheet_url = None
+        
+        # Track tool call attempts to prevent excessive API calls
+        self._tool_call_attempts = {}  # {tool_name: attempt_count}
+        self._max_tool_attempts = 3  # Max 3 attempts per tool
 
     def tool_expects_input(self, tool_name: str) -> bool:
         tool = next((t for t in self.tools if getattr(t, "name", None) == tool_name), None)
@@ -49,6 +57,12 @@ class AgentLoop:
     
     def verify_sheet_created(self) -> tuple[bool, str]:
         """Verify that sheet creation is completed"""
+        # Check if we already have a sheet_id tracked
+        if self._created_sheet_id:
+            self.workflow_steps['sheet_created'] = True
+            return True, f"Sheet already created: {self._created_sheet_id}"
+        
+        # Check memory for sheet creation
         for mem in self.context.memory_trace:
             if hasattr(mem, 'tool_name') and mem.tool_name:
                 if "create_google_sheet" in mem.tool_name.lower():
@@ -57,11 +71,28 @@ class AgentLoop:
                         import re
                         # Try to extract sheet_id
                         text = str(mem.text)
-                        json_match = re.search(r'\{"sheet_id":\s*"[^"]+",', text)
-                        if json_match or "sheet_id" in text.lower():
+                        json_match = re.search(r'\{"sheet_id":\s*"([^"]+)"', text)
+                        if json_match:
+                            sheet_id = json_match.group(1)
+                            self._created_sheet_id = sheet_id
                             self.workflow_steps['sheet_created'] = True
-                            return True, "Sheet created successfully"
+                            return True, f"Sheet created successfully: {sheet_id}"
+                        elif "sheet_id" in text.lower():
+                            # Try to extract from JSON in text
+                            try:
+                                json_data = json.loads(text)
+                                if isinstance(json_data, dict) and "sheet_id" in json_data:
+                                    sheet_id = json_data["sheet_id"]
+                                    self._created_sheet_id = sheet_id
+                                    self.workflow_steps['sheet_created'] = True
+                                    return True, f"Sheet created successfully: {sheet_id}"
+                            except:
+                                pass
         return False, "Sheet creation not verified - no sheet_id found"
+    
+    def get_created_sheet_id(self) -> str:
+        """Get the sheet_id of the created sheet"""
+        return self._created_sheet_id
     
     def verify_data_added(self) -> tuple[bool, str]:
         """Verify that data was added to sheet"""
@@ -273,16 +304,27 @@ MANDATORY WORKFLOW (must complete ALL steps):
 Complete the missing steps before returning FINAL_ANSWER."""
                         continue
                     
+                    # All steps verified - extract FINAL_ANSWER and STOP
                     final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
                     if final_lines:
                         self.context.final_answer = final_lines[-1].strip()
                         print(f"[phase] ✅ COMPLETION: Task completed successfully - all steps verified")
+                        print(f"[workflow] 🛑 Stopping agent loop - task complete")
                         self._logger.log_verification("final_answer", True, "All workflow steps completed")
-                        break
+                        break  # Exit loop immediately
                     else:
-                        self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
+                        # Extract sheet link if available
+                        sheet_link = self._pending_sheet_link or self._created_sheet_url
+                        if not sheet_link and self._created_sheet_id:
+                            sheet_link = f"https://docs.google.com/spreadsheets/d/{self._created_sheet_id}/edit"
+                        
+                        if sheet_link:
+                            self.context.final_answer = f"FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: {sheet_link}]"
+                        else:
+                            self.context.final_answer = "FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data.]"
                         print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
-                        break
+                        print(f"[workflow] 🛑 Stopping agent loop - task complete")
+                        break  # Exit loop immediately
                 
                 # Force completion if we're at the last step
                 if step >= max_steps - 1:
@@ -340,6 +382,59 @@ Complete the missing steps before returning FINAL_ANSWER."""
                     print(f"[execution] Attempt {retry_count + 1}/{max_retries_per_step}: {tool_name}")
                     self._logger.log_workflow_step(step + 1, "execution", "started", f"Tool: {tool_name}")
 
+                    # Prevent multiple sheet creation - check BEFORE calling tool
+                    if "create_google_sheet" in tool_name.lower():
+                        if self._created_sheet_id:
+                            print(f"[workflow] ⚠️ Sheet already exists (ID: {self._created_sheet_id}). Preventing duplicate creation.")
+                            # Simulate successful response with existing sheet_id
+                            result_obj = {
+                                "sheet_id": self._created_sheet_id,
+                                "sheet_url": self._created_sheet_url or f"https://docs.google.com/spreadsheets/d/{self._created_sheet_id}/edit",
+                                "message": "Using existing sheet (duplicate creation prevented)"
+                            }
+                            result_str = json.dumps(result_obj)
+                            print(f"[action] ✅ {tool_name} → Using existing sheet: {self._created_sheet_id}")
+                            
+                            # Add to memory as if tool was called
+                            memory_text = f"{tool_name}({arguments}) → {result_str}"
+                            memory_item = MemoryItem(
+                                text=memory_text,
+                                type="tool_output",
+                                tool_name=tool_name,
+                                user_query=self.context.user_input,
+                                tags=[tool_name],
+                                session_id=self.context.session_id
+                            )
+                            self.context.add_memory(memory_item)
+                            
+                            # Mark step as completed
+                            step_key = f"step_{step}"
+                            completed_steps.add(step_key)
+                            step_retry_count[step_key] = 0
+                            
+                            # Update query to continue with existing sheet
+                            query = f"""Original user task: {self.context.user_input}
+
+⚠️ You tried to create a new sheet, but a sheet already exists (ID: {self._created_sheet_id}).
+Use the EXISTING sheet_id to add data: add_data_to_sheet|input.sheet_id="{self._created_sheet_id}"|input.data=[[...]]
+
+Do NOT create another sheet - this will cause rate limit errors."""
+                            continue
+                    
+                    # Check tool call attempts to prevent excessive API calls
+                    tool_attempt_key = f"{tool_name}_{str(arguments)[:50]}"
+                    if tool_attempt_key not in self._tool_call_attempts:
+                        self._tool_call_attempts[tool_attempt_key] = 0
+                    
+                    self._tool_call_attempts[tool_attempt_key] += 1
+                    attempt_count = self._tool_call_attempts[tool_attempt_key]
+                    
+                    if attempt_count > self._max_tool_attempts:
+                        error_msg = f"Tool '{tool_name}' exceeded maximum attempts ({self._max_tool_attempts}). This may be due to rate limits (429) or persistent errors. Please try again later."
+                        print(f"[workflow] ❌ {error_msg}")
+                        self._logger.log_error("tool_max_attempts_exceeded", error_msg)
+                        raise Exception(error_msg)
+
                     if self.tool_expects_input(tool_name):
                         tool_input = {'input': arguments} if not (isinstance(arguments, dict) and 'input' in arguments) else arguments
                     else:
@@ -359,18 +454,44 @@ Complete the missing steps before returning FINAL_ANSWER."""
                         duration_ms = (time.time() - start_time) * 1000
                         self._logger.log_tool_call(tool_display_name, tool_input, "success", duration_ms)
                         
+                        # Reset attempt count on success
+                        self._tool_call_attempts[tool_attempt_key] = 0
+                        
                         # Special logging for DuckDuckGoSearcher
                         if tool_name == "search":
                             print(f"[DuckDuckGoSearcher] ✅ Web search completed via tool call (duration: {duration_ms:.2f}ms)")
                     except Exception as tool_error:
                         duration_ms = (time.time() - start_time) * 1000
                         error_msg = str(tool_error)
+                        
+                        # Check for rate limit errors (429)
+                        is_rate_limit = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg.upper() or "rate limit" in error_msg.lower()
+                        if is_rate_limit:
+                            print(f"[workflow] ⚠️ Rate limit detected (429) for tool '{tool_name}'. Attempt {attempt_count}/{self._max_tool_attempts}")
+                            self._logger.log_error("rate_limit_error", f"Tool: {tool_name}, Attempt: {attempt_count}")
+                            if attempt_count >= self._max_tool_attempts:
+                                raise Exception(f"Rate limit exceeded after {self._max_tool_attempts} attempts for '{tool_name}'. Please wait before trying again.")
+                        
+                        # Check for 404 errors (sheet not found)
+                        is_404 = "404" in error_msg or "not found" in error_msg.lower()
+                        if is_404 and "create_google_sheet" not in tool_name.lower():
+                            print(f"[workflow] ⚠️ Resource not found (404) - Sheet may have been deleted or sheet_id is incorrect")
+                            self._logger.log_error("resource_not_found", f"Tool: {tool_name}, Error: {error_msg}")
+                            # If sheet_id is wrong, try using stored sheet_id
+                            if "add_data_to_sheet" in tool_name.lower() and self._created_sheet_id:
+                                print(f"[workflow] 🔄 Attempting to use stored sheet_id: {self._created_sheet_id}")
+                                # Will be retried with correct sheet_id in next iteration
+                        
                         self._logger.log_tool_call(tool_display_name, tool_input, None, duration_ms, error_msg)
                         self._logger.log_error("tool_execution_error", error_msg)
                         
                         # Special logging for DuckDuckGoSearcher errors
                         if tool_name == "search":
                             print(f"[DuckDuckGoSearcher] ❌ Web search failed: {error_msg}")
+                        
+                        # If max attempts reached, don't raise - let retry logic handle it
+                        if attempt_count >= self._max_tool_attempts:
+                            raise Exception(f"Tool '{tool_name}' failed after {self._max_tool_attempts} attempts. Last error: {error_msg}")
                         raise
 
                     # ✅ Safe TextContent parsing
@@ -407,6 +528,15 @@ Complete the missing steps before returning FINAL_ANSWER."""
                             print(f"[workflow] ✅ Search step verified: {details}")
                     
                     elif "create_google_sheet" in tool_name.lower():
+                        # Extract and store sheet_id immediately from result
+                        if isinstance(result_obj, dict):
+                            sheet_id = result_obj.get("sheet_id") or result_obj.get("sheetId", "")
+                            if sheet_id:
+                                self._created_sheet_id = sheet_id
+                                self._created_sheet_url = result_obj.get("sheet_url") or result_obj.get("sheetUrl", "")
+                                self.workflow_steps['sheet_created'] = True
+                                print(f"[workflow] ✅ Sheet created and stored: {sheet_id}")
+                        
                         verified, details = self.verify_sheet_created()
                         self._logger.log_verification("create_sheet", verified, details)
                         if verified:
@@ -438,6 +568,31 @@ Complete the missing steps before returning FINAL_ANSWER."""
                     # Log step completion
                     next_step, next_step_desc = self.get_next_required_step()
                     self._logger.log_step_completion(tool_name, True, next_step)
+                    
+                    # EARLY TERMINATION: Check if all workflow steps are complete
+                    all_steps_complete = all([
+                        self.workflow_steps['search_completed'],
+                        self.workflow_steps['sheet_created'],
+                        self.workflow_steps['data_added'],
+                        self.workflow_steps['link_retrieved']
+                    ])
+                    
+                    if all_steps_complete:
+                        print(f"[workflow] 🎉 All workflow steps completed! Preparing FINAL_ANSWER...")
+                        self._logger.log_verification("all_steps_complete", True, "All workflow steps verified")
+                        
+                        # Construct final answer with sheet link
+                        sheet_link = self._pending_sheet_link or self._created_sheet_url
+                        if not sheet_link and self._created_sheet_id:
+                            sheet_link = f"https://docs.google.com/spreadsheets/d/{self._created_sheet_id}/edit"
+                        
+                        if sheet_link:
+                            self.context.final_answer = f"FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: {sheet_link}]"
+                        else:
+                            self.context.final_answer = f"FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data.]"
+                        
+                        print(f"[workflow] ✅ Task completed - stopping agent loop immediately")
+                        break  # Exit loop immediately
                     
                     # 🧠 Add memory - store full result for retrieval
                     memory_text = f"{tool_name}({arguments}) → {result_str}"
@@ -475,11 +630,19 @@ Complete the missing steps before returning FINAL_ANSWER."""
                             title_suggestion = " ".join(self.current_perception.entities[:2]).title()
                         workflow_guidance = f"\n\nNEXT: Create a Google Sheet to store this data. Use: create_google_sheet|input.title=\"{title_suggestion}\""
                     elif "create_google_sheet" in tool_name.lower():
-                        # Extract sheet_id from result
+                        # Extract sheet_id from result and store it
                         sheet_id = ""
+                        sheet_url = ""
                         if isinstance(result_obj, dict):
                             sheet_id = result_obj.get("sheet_id") or result_obj.get("sheetId", "")
+                            sheet_url = result_obj.get("sheet_url") or result_obj.get("sheetUrl", "")
+                        
+                        # Store sheet_id to prevent duplicate creation
                         if sheet_id:
+                            self._created_sheet_id = sheet_id
+                            self._created_sheet_url = sheet_url
+                            print(f"[workflow] 📊 Sheet ID stored: {sheet_id} (preventing duplicate creation)")
+                            
                             # Get search results from memory to help format data
                             search_results = ""
                             for mem in self.context.memory_trace:
@@ -490,28 +653,47 @@ Complete the missing steps before returning FINAL_ANSWER."""
                                         break
                             
                             limit_text = f"top {scope_limit}" if scope_limit else "all available"
-                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract data from search results and add to sheet ({limit_text} results).\n\n🔴 CRITICAL FORMATTING INSTRUCTIONS:\n- Use: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],[\"Row2Col1\",\"Row2Col2\"]]\n- Format MUST be: [[\"Header1\",\"Header2\"],[\"DataRow1Col1\",\"DataRow1Col2\"],[\"DataRow2Col1\",\"DataRow2Col2\"],...]\n- First row MUST be headers (e.g., [\"Rank\",\"Name\",\"Score\"])\n- Each row MUST be a list of strings: [\"Value1\",\"Value2\",\"Value3\"]\n- Extract data from search results above - DO NOT use placeholder data\n- Limit to {scope_limit} data rows (excluding header) if scope_limit is set\n- Example for 3 items: [[\"Rank\",\"Name\",\"Points\"],[\"1\",\"Team A\",\"95\"],[\"2\",\"Team B\",\"87\"],[\"3\",\"Team C\",\"82\"]]\n\n⚠️ If you don't extract real data, the sheet will be blank!"
+                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\n⚠️ IMPORTANT: Do NOT create another sheet. Use this sheet_id: {sheet_id}\n\nNEXT: Extract data from search results and add to sheet ({limit_text} results).\n\n🔴 CRITICAL FORMATTING INSTRUCTIONS:\n- Use: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],[\"Row2Col1\",\"Row2Col2\"]]\n- Format MUST be: [[\"Header1\",\"Header2\"],[\"DataRow1Col1\",\"DataRow1Col2\"],[\"DataRow2Col1\",\"DataRow2Col2\"],...]\n- First row MUST be headers (e.g., [\"Rank\",\"Name\",\"Score\"])\n- Each row MUST be a list of strings: [\"Value1\",\"Value2\",\"Value3\"]\n- Extract data from search results above - DO NOT use placeholder data\n- Limit to {scope_limit} data rows (excluding header) if scope_limit is set\n- Example for 3 items: [[\"Rank\",\"Name\",\"Points\"],[\"1\",\"Team A\",\"95\"],[\"2\",\"Team B\",\"87\"],[\"3\",\"Team C\",\"82\"]]\n\n⚠️ If you don't extract real data, the sheet will be blank!"
                     elif "add_data_to_sheet" in tool_name.lower():
-                        # Get sheet_id from arguments
-                        sheet_id = ""
-                        if isinstance(arguments, dict):
-                            if "input" in arguments and isinstance(arguments["input"], dict):
-                                sheet_id = arguments["input"].get("sheet_id", "")
-                            else:
-                                sheet_id = arguments.get("sheet_id", "")
+                        # Get sheet_id from arguments - use stored sheet_id if available
+                        sheet_id = self._created_sheet_id or ""
+                        if not sheet_id:
+                            if isinstance(arguments, dict):
+                                if "input" in arguments and isinstance(arguments["input"], dict):
+                                    sheet_id = arguments["input"].get("sheet_id", "")
+                                else:
+                                    sheet_id = arguments.get("sheet_id", "")
+                        
+                        # If we have a stored sheet_id, ensure it matches
+                        if self._created_sheet_id and sheet_id != self._created_sheet_id:
+                            print(f"[workflow] ⚠️ Sheet ID mismatch: using stored ID {self._created_sheet_id} instead of {sheet_id}")
+                            sheet_id = self._created_sheet_id
+                        
                         if sheet_id:
-                            workflow_guidance = f"\n\n✅ Data added to sheet successfully!\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\"\n\nIMPORTANT: After getting the link, you can return FINAL_ANSWER. The link will be sent to the user via Telegram."
+                            workflow_guidance = f"\n\n✅ Data added to sheet successfully!\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\"\n\nIMPORTANT: Use the EXACT sheet_id: {sheet_id}\nAfter getting the link, you can return FINAL_ANSWER. The link will be sent to the user via Telegram."
                     elif "get_sheet_link" in tool_name.lower():
-                        # Extract link from result
+                        # Extract link from result - use stored sheet_id if needed
                         sheet_link = ""
                         if isinstance(result_obj, dict):
                             sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "") or result_obj.get("sheetUrl", "")
+                        
+                        # If link not found but we have stored sheet_url, use it
+                        if not sheet_link and self._created_sheet_url:
+                            sheet_link = self._created_sheet_url
+                            print(f"[workflow] Using stored sheet URL: {sheet_link}")
+                        
+                        # If still no link, construct from stored sheet_id
+                        if not sheet_link and self._created_sheet_id:
+                            sheet_link = f"https://docs.google.com/spreadsheets/d/{self._created_sheet_id}/edit"
+                            print(f"[workflow] Constructed sheet link from stored sheet_id: {sheet_link}")
+                        
                         if sheet_link:
                             # Store sheet_link for Telegram response
                             self._pending_sheet_link = sheet_link
+                            self.workflow_steps['link_retrieved'] = True
                             
-                            # After getting sheet link, task is complete - return FINAL_ANSWER
-                            workflow_guidance = f"\n\n✅ Sheet link retrieved successfully: {sheet_link}\n\n🎉 Task is complete! Return FINAL_ANSWER with a summary.\n\nReturn FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: {sheet_link}]\n\nThe sheet link will be sent to the user via Telegram."
+                            # After getting sheet link, task is complete - return FINAL_ANSWER IMMEDIATELY
+                            workflow_guidance = f"\n\n✅ Sheet link retrieved successfully: {sheet_link}\n\n🎉 ALL STEPS COMPLETE! Return FINAL_ANSWER immediately.\n\nReturn FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: {sheet_link}]\n\nThe sheet link will be sent to the user via Telegram."
                         else:
                             workflow_guidance = f"\n\n⚠️ Failed to get sheet link. Try again or check sheet_id is correct."
                     

@@ -144,6 +144,7 @@ async def process_message(message: str, chat_id: str, result_obj: dict, multi_mc
                 print(f"✅ Sent completion message to Telegram (chat_id: {chat_id})")
                 if sheet_link:
                     print(f"✅ Included Google Sheet link in Telegram response")
+                print(f"🛑 Agent processing completed - task finished")
             except Exception as e:
                 print(f"⚠️ Failed to send Telegram message: {e}")
                 import traceback

@@ -72,8 +72,11 @@ For ANY user query, follow this standardized workflow:
    - Example: If user asks "latest scores" with scope_limit=20 → query="latest scores top 20"
    - Example: If user asks "stock prices" with scope_limit=15 → query="current stock prices top 15"
 2. Create Sheet: FUNCTION_CALL: create_google_sheet|input.title="<relevant title based on query>"
+   - 🔴 CRITICAL: Only create ONE sheet per session. If a sheet was already created, use the existing sheet_id.
+   - Check memory for existing sheet_id before creating a new one
    - Title should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Stock Prices", "Weather Data")
    - Generate title from query entities or keywords
+   - ⚠️ DO NOT create multiple sheets - this will cause rate limit errors (429)
 3. Add Data: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],...]
    - 🔴 CRITICAL: Extract relevant data from search results (look in memory above) - DO NOT use placeholder data
    - Format MUST be: [[\"Header1\",\"Header2\"],[\"DataRow1Col1\",\"DataRow1Col2\"],[\"DataRow2Col1\",\"DataRow2Col2\"],...]
