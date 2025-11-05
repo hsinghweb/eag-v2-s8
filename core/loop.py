@@ -32,16 +32,33 @@ class AgentLoop:
         try:
             max_steps = self.context.agent_profile.max_steps
             query = self.context.user_input
+            
+            # Track retry attempts per tool/step (max 3 attempts per step)
+            step_retry_count = {}  # {step_number: retry_count}
+            max_retries_per_step = 3
+            
+            # Track completed steps to avoid infinite loops
+            completed_steps = set()  # Track which steps completed successfully
+            failed_steps = {}  # Track which steps failed and how many times
+            
+            # Track consecutive failures for short-circuit
             consecutive_failures = 0
-            max_failures = 2  # Allow 2 consecutive failures before giving up
-            last_tool_call = None  # Track last tool call to detect loops
-            repeated_calls = 0  # Count repeated tool calls
+            max_consecutive_failures = 3  # Short-circuit after 3 consecutive failures
+            
+            # Track last tool call to detect loops
+            last_tool_call = None
+            repeated_calls = 0
 
             for step in range(max_steps):
                 self.context.step = step
+                print(f"\n{'='*60}")
                 print(f"[loop] Step {step + 1} of {max_steps}")
-
-                # 🧠 Perception
+                print(f"{'='*60}")
+                
+                # ============================================
+                # PHASE 1: PERCEPTION - Understand the question
+                # ============================================
+                print(f"[phase] PERCEPTION: Understanding user intent...")
                 perception_raw = await extract_perception(query)
 
 
@@ -103,75 +120,98 @@ class AgentLoop:
                 scope_info = ""
                 if hasattr(perception, 'scope_limit') and perception.scope_limit:
                     scope_info = f", Scope: top {perception.scope_limit}"
-                print(f"[perception] Intent: {perception.intent or 'None'}, Hint: {perception.tool_hint or 'None'}{scope_info}")
+                print(f"[perception] ✅ Intent: {perception.intent or 'None'}, Hint: {perception.tool_hint or 'None'}{scope_info}")
 
-                # 💾 Memory Retrieval
+                # ============================================
+                # PHASE 2: MEMORY - Retrieve relevant context
+                # ============================================
+                print(f"[phase] MEMORY: Retrieving relevant context...")
                 retrieved = self.context.memory.retrieve(
                     query=query,
                     top_k=self.context.agent_profile.memory_config["top_k"],
                     type_filter=self.context.agent_profile.memory_config.get("type_filter", None),
                     session_filter=self.context.session_id
                 )
-                print(f"[memory] Retrieved {len(retrieved)} memories")
+                print(f"[memory] ✅ Retrieved {len(retrieved)} memories")
 
-                # 📊 Planning (via strategy)
+                # ============================================
+                # PHASE 3: DECISION - Create execution plan
+                # ============================================
+                print(f"[phase] DECISION: Creating execution plan...")
                 plan = await decide_next_action(
                     context=self.context,
                     perception=perception,
                     memory_items=retrieved,
                     all_tools=self.tools
                 )
-                print(f"[plan] {plan}")
+                print(f"[plan] ✅ {plan}")
 
+                # Check if plan is FINAL_ANSWER (task completed)
                 if "FINAL_ANSWER:" in plan:
-                    # Optionally extract the final answer portion
                     final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
                     if final_lines:
                         self.context.final_answer = final_lines[-1].strip()
+                        print(f"[phase] ✅ COMPLETION: Task completed successfully")
+                        break
                     else:
                         self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
-                    break
+                        print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
+                        break
                 
                 # Force completion if we're at the last step
                 if step >= max_steps - 1:
-                    print(f"[agent] ⚠️ Reached step {step + 1} of {max_steps}. Forcing completion.")
-                    # Try to get summary of what was done
+                    print(f"[agent] ⚠️ Reached maximum steps ({max_steps}). Forcing completion.")
                     completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
                     summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
-                    self.context.final_answer = f"FINAL_ANSWER: [Task partially completed due to step limit. {summary}. Last plan: {plan[:100]}...]"
+                    self.context.final_answer = f"FINAL_ANSWER: [Task partially completed due to step limit. {summary}]"
+                    print(f"[phase] ✅ COMPLETION: Forced completion after {max_steps} steps")
                     break
 
 
-                # ⚙️ Tool Execution
+                # ============================================
+                # PHASE 4: EXECUTION - Execute the plan step by step
+                # ============================================
+                print(f"[phase] EXECUTION: Executing plan...")
+                
                 try:
                     tool_name, arguments = parse_function_call(plan)
                     
-                    # Detect repeated tool calls (potential loop)
+                    # Check if this step has exceeded max retries (track per step, not per tool)
+                    step_key = f"step_{step}"
+                    retry_count = step_retry_count.get(step_key, 0)
+                    
+                    if retry_count >= max_retries_per_step:
+                        print(f"[agent] ⚠️ Step {step + 1} exceeded max retries ({max_retries_per_step}). Skipping to next step.")
+                        failed_steps[step_key] = retry_count
+                        consecutive_failures += 1
+                        
+                        # Short-circuit if too many consecutive failures
+                        if consecutive_failures >= max_consecutive_failures:
+                            print(f"[agent] ❌ Short-circuit: {consecutive_failures} consecutive failures. Stopping.")
+                            completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                            summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
+                            self.context.final_answer = f"FINAL_ANSWER: [Task failed after {consecutive_failures} consecutive failures. {summary}]"
+                            break
+                        
+                        # Move to next step
+                        continue
+                    
+                    # Detect repeated tool calls (potential infinite loop)
                     current_call = f"{tool_name}_{str(arguments)[:50]}"
                     if last_tool_call == current_call:
                         repeated_calls += 1
                         if repeated_calls >= 2:
-                            print(f"[agent] ⚠️ Detected loop: same tool call repeated {repeated_calls} times")
-                            print(f"[agent] Forcing completion to break loop")
+                            print(f"[agent] ⚠️ Detected infinite loop: same tool call repeated {repeated_calls} times")
+                            print(f"[agent] ❌ Forcing completion to break loop")
                             completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
                             summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
-                            self.context.final_answer = f"FINAL_ANSWER: [Loop detected. Task partially completed. {summary}. Attempting to force next step.]"
-                            # Try to skip to next logical step
-                            if "search" in tool_name.lower():
-                                query = f"""Original user task: {self.context.user_input}
-
-Search completed. Now proceed to create Google Sheet with the data found.
-
-If you have search results, use create_google_sheet tool next.
-If sheet already created, use add_data_to_sheet next.
-Otherwise, provide FINAL_ANSWER with what was accomplished."""
-                                repeated_calls = 0  # Reset counter
-                                last_tool_call = None
-                                continue
+                            self.context.final_answer = f"FINAL_ANSWER: [Infinite loop detected. Task stopped. {summary}]"
                             break
                     else:
                         repeated_calls = 0
                         last_tool_call = current_call
+                    
+                    print(f"[execution] Attempt {retry_count + 1}/{max_retries_per_step}: {tool_name}")
 
                     if self.tool_expects_input(tool_name):
                         tool_input = {'input': arguments} if not (isinstance(arguments, dict) and 'input' in arguments) else arguments
@@ -204,13 +244,16 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                         display_result = result_str[:500] + "... [truncated]"
                     else:
                         display_result = result_str
-                    print(f"[action] {tool_name} → {display_result}")
+                    print(f"[action] ✅ {tool_name} → {display_result}")
 
+                    # Mark this step as completed
+                    step_key = f"step_{step}"
+                    completed_steps.add(step_key)
+                    step_retry_count[step_key] = 0  # Reset retry count on success
+                    
                     # 🧠 Add memory - store full result for retrieval
-                    # Include the raw result in the text for better retrieval
                     memory_text = f"{tool_name}({arguments}) → {result_str}"
                     if isinstance(result_obj, dict):
-                        # Include structured data for easier parsing (especially sheet_id)
                         memory_text += f"\n[STRUCTURED_DATA]: {json.dumps(result_obj)}"
                     
                     memory_item = MemoryItem(
@@ -223,8 +266,9 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                     )
                     self.context.add_memory(memory_item)
 
-                    # Reset failure counter on success
+                    # Reset failure counters on success
                     consecutive_failures = 0
+                    repeated_calls = 0
                     
                     # 🔁 Next query - Provide workflow guidance
                     # Check what tools have been used
@@ -331,23 +375,64 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
 
     Otherwise, return the next FUNCTION_CALL to continue the workflow."""
                 except Exception as e:
-                    print(f"[error] Tool execution failed: {e}")
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_failures:
-                        print(f"[agent] Too many failures ({consecutive_failures}). Stopping.")
-                        self.context.final_answer = "FINAL_ANSWER: [Agent encountered errors and stopped]"
-                        break
-                    # Try to continue with next step
-                    query = f"""Original user task: {self.context.user_input}
+                    print(f"[error] ❌ Tool execution failed: {e}")
                     
+                    # Increment retry count for this step (track per step, not per tool)
+                    step_key = f"step_{step}"
+                    step_retry_count[step_key] = step_retry_count.get(step_key, 0) + 1
+                    retry_count = step_retry_count[step_key]
+                    
+                    print(f"[execution] ⚠️ Retry count for step {step + 1}: {retry_count}/{max_retries_per_step}")
+                    
+                    consecutive_failures += 1
+                    
+                    # Short-circuit if too many consecutive failures
+                    if consecutive_failures >= max_consecutive_failures:
+                        print(f"[agent] ❌ Short-circuit: {consecutive_failures} consecutive failures. Stopping.")
+                        completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                        summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
+                        self.context.final_answer = f"FINAL_ANSWER: [Task failed after {consecutive_failures} consecutive failures. {summary}]"
+                        break
+                    
+                    # If retry limit not reached, continue to next iteration (will retry)
+                    if retry_count < max_retries_per_step:
+                        print(f"[execution] 🔄 Retrying step {step + 1} (attempt {retry_count + 1}/{max_retries_per_step})...")
+                        # Update query to retry with error context
+                        query = f"""Original user task: {self.context.user_input}
+                        
 Error occurred in previous step: {e}
 
-Try a different approach or provide FINAL_ANSWER if task cannot be completed."""
-                    continue
+Retry this step with a different approach or provide FINAL_ANSWER if task cannot be completed."""
+                        continue  # Retry this step
+                    else:
+                        print(f"[execution] ❌ Max retries ({max_retries_per_step}) reached for step {step + 1}. Moving to next step.")
+                        failed_steps[step_key] = retry_count
+                        # Update query to continue to next step
+                        query = f"""Original user task: {self.context.user_input}
+                        
+Previous step failed after {max_retries_per_step} attempts. Continue to next step or provide FINAL_ANSWER if task cannot be completed."""
+                        continue  # Move to next step
 
         except Exception as e:
-            print(f"[agent] Session failed: {e}")
-
+            print(f"[agent] ❌ Session failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.context.final_answer = "FINAL_ANSWER: [Agent session failed due to error]"
+        
+        # ============================================
+        # PHASE 5: COMPLETION - Finalize and return
+        # ============================================
+        print(f"\n{'='*60}")
+        print(f"[phase] COMPLETION: Finalizing session...")
+        
+        if not self.context.final_answer:
+            completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+            summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
+            self.context.final_answer = f"FINAL_ANSWER: [Task completed. {summary}]"
+        
+        print(f"[phase] ✅ Final Answer: {self.context.final_answer}")
+        print(f"{'='*60}\n")
+        
         return self.context.final_answer or "FINAL_ANSWER: [no result]"
 
 
