@@ -68,11 +68,18 @@ For "Find F1 Standings and put in Google Sheet, then email":
 1. First: FUNCTION_CALL: search|query="F1 current point standings 2024" (or search_documents)
 2. Then: FUNCTION_CALL: create_google_sheet|input.title="F1 Standings"
 3. Then: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[header1,header2],[row1col1,row1col2],...]
-4. Then: FUNCTION_CALL: get_sheet_link|input.sheet_id=<from step 2>
+   - CRITICAL: Extract driver names and points from search results (look in memory above)
+   - Format as 2D array: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"],...]
+   - Use EXACT sheet_id from create_google_sheet result (check memory above - look for sheet_id in STRUCTURED_DATA)
+   - Example: If search shows "Max Verstappen 575 points", format as: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"]]
+4. Then: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
 5. Then: FUNCTION_CALL: send_email_with_link|to=<use Gmail account email>|subject="F1 Standings"|body="Here is the F1 standings sheet"|sheet_link=<from step 4>
 6. Finally: FINAL_ANSWER: [Task completed. Sheet created at <link> and emailed to <email>]
 
-IMPORTANT: For step 5, use the same email address associated with your Gmail account (the one you used for OAuth).
+IMPORTANT: 
+- For step 3: Extract driver names and points from search results. Create a 2D array with headers ["Driver","Points"] and rows like [["Max Verstappen","575"],["Lewis Hamilton","234"]]
+- For step 5: Use the same email address associated with your Gmail account (the one you used for OAuth).
+- ALWAYS use the sheet_id from the create_google_sheet result when calling add_data_to_sheet and get_sheet_link
 
 ---
 

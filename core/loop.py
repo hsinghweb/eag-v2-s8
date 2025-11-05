@@ -197,12 +197,18 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                         display_result = result_str
                     print(f"[action] {tool_name} → {display_result}")
 
-                    # 🧠 Add memory
+                    # 🧠 Add memory - store full result for retrieval
+                    # Include the raw result in the text for better retrieval
+                    memory_text = f"{tool_name}({arguments}) → {result_str}"
+                    if isinstance(result_obj, dict):
+                        # Include structured data for easier parsing (especially sheet_id)
+                        memory_text += f"\n[STRUCTURED_DATA]: {json.dumps(result_obj)}"
+                    
                     memory_item = MemoryItem(
-                        text=f"{tool_name}({arguments}) → {result_str}",
+                        text=memory_text,
                         type="tool_output",
                         tool_name=tool_name,
-                        user_query=query,
+                        user_query=self.context.user_input,
                         tags=[tool_name],
                         session_id=self.context.session_id
                     )
@@ -224,7 +230,16 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                         if isinstance(result_obj, dict):
                             sheet_id = result_obj.get("sheet_id") or result_obj.get("sheetId", "")
                         if sheet_id:
-                            workflow_guidance = f"\n\nNEXT: Add data to the sheet using: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Driver\",\"Points\"],[...]]"
+                            # Get search results from memory to help format data
+                            search_results = ""
+                            for mem in self.context.memory_trace:
+                                if hasattr(mem, 'tool_name') and mem.tool_name and "search" in mem.tool_name.lower():
+                                    # MemoryItem stores result in 'text' attribute
+                                    if hasattr(mem, 'text') and mem.text:
+                                        search_results = str(mem.text)[:500]
+                                        break
+                            
+                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract F1 driver standings from search results and add to sheet.\nUse: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Driver\",\"Points\"],[\"Max Verstappen\",\"575\"],[\"Lewis Hamilton\",\"234\"],...]\n\nIMPORTANT: Extract actual driver names and points from search results above. Format as 2D array with headers [\"Driver\",\"Points\"] followed by rows of [driver_name, points]."
                     elif "add_data_to_sheet" in tool_name.lower():
                         # Get sheet_id from arguments
                         sheet_id = ""
@@ -243,6 +258,15 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
                         if sheet_link:
                             workflow_guidance = f"\n\nNEXT: Send email with link using: send_email_with_link|to=<your_gmail_address>|subject=\"F1 Standings\"|body=\"Here is the F1 standings sheet\"|sheet_link=\"{sheet_link}\"\n\nNOTE: Replace <your_gmail_address> with your actual Gmail address (the one you used for OAuth setup)."
                     
+                    # Get search results for data extraction context
+                    search_context = ""
+                    for mem in self.context.memory_trace:
+                        if hasattr(mem, 'tool_name') and mem.tool_name and "search" in mem.tool_name.lower():
+                            # MemoryItem stores result in 'text' attribute
+                            if hasattr(mem, 'text') and mem.text:
+                                search_context = f"\n\n📊 Search Results (for data extraction):\n{str(mem.text)[:1500]}{'...' if len(str(mem.text)) > 1500 else ''}"
+                                break
+                    
                     query = f"""Original user task: {self.context.user_input}
 
     Tools used so far: {', '.join(set(used_tools))}
@@ -250,10 +274,19 @@ Otherwise, provide FINAL_ANSWER with what was accomplished."""
     Your last tool ({tool_name}) produced this result:
 
     {result_str[:1000]}{'...' if len(result_str) > 1000 else ''}
+    {search_context}
     
     {workflow_guidance}
     
     Step: {step + 2} of {max_steps}
+    
+    CRITICAL INSTRUCTIONS:
+    - If you just created a sheet, you MUST extract driver names and points from search results above
+    - Look for patterns like "Max Verstappen 575" or "1. Max Verstappen - 575 points" in search results
+    - Format data as: [["Driver","Points"],["Max Verstappen","575"],["Lewis Hamilton","234"],["Charles Leclerc","201"],...]
+    - Extract at least top 5-10 drivers with their points
+    - Use the EXACT sheet_id from the create_google_sheet result above (it's in the STRUCTURED_DATA section)
+    - Do NOT skip this step - adding data is required!
     
     If ALL steps are complete (search → create sheet → add data → get link → send email), return:
     FINAL_ANSWER: [Task completed successfully. Summary: <what was done>]

@@ -173,8 +173,12 @@ async def call_tool(request: ToolCallRequest):
             raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
         
         return {"result": result}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        print(f"❌ Tool execution error: {error_msg}", file=sys.stderr)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 # Tool Implementations
@@ -248,8 +252,18 @@ async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
             data = args.get("data")
             range_name = args.get("range", "A1")
         
-        if not sheet_id or not data:
-            raise ValueError("sheet_id and data are required")
+        if not sheet_id:
+            raise ValueError("sheet_id is required")
+        if not data:
+            raise ValueError("data is required")
+        
+        # Validate data format - must be a list of lists
+        if not isinstance(data, list):
+            raise ValueError(f"data must be a list (2D array), got {type(data)}")
+        if len(data) == 0:
+            raise ValueError("data cannot be empty")
+        if not isinstance(data[0], list):
+            raise ValueError(f"data must be a 2D array (list of lists), first element is {type(data[0])}")
         
         body = {
             'values': data
