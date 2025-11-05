@@ -252,18 +252,47 @@ async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
             data = args.get("data")
             range_name = args.get("range", "A1")
         
+        # Log received arguments for debugging
+        print(f"[add_data_to_sheet] Received args: sheet_id={sheet_id}, data_type={type(data)}, range={range_name}", file=sys.stderr)
+        if data:
+            print(f"[add_data_to_sheet] Data preview: {str(data)[:200]}...", file=sys.stderr)
+        
         if not sheet_id:
             raise ValueError("sheet_id is required")
         if not data:
             raise ValueError("data is required")
         
+        # Try to parse data if it's a string (might happen if LLM passes it as string)
+        if isinstance(data, str):
+            print(f"[add_data_to_sheet] ⚠️ Data is a string, attempting to parse...", file=sys.stderr)
+            try:
+                import json
+                data = json.loads(data)
+                print(f"[add_data_to_sheet] ✅ Successfully parsed data from string", file=sys.stderr)
+            except json.JSONDecodeError:
+                try:
+                    import ast
+                    data = ast.literal_eval(data)
+                    print(f"[add_data_to_sheet] ✅ Successfully parsed data using ast.literal_eval", file=sys.stderr)
+                except Exception as parse_error:
+                    raise ValueError(f"data is a string but could not be parsed as JSON or Python literal: {parse_error}. Data: {data[:100]}")
+        
         # Validate data format - must be a list of lists
         if not isinstance(data, list):
-            raise ValueError(f"data must be a list (2D array), got {type(data)}")
+            raise ValueError(f"data must be a list (2D array), got {type(data)}: {data}")
         if len(data) == 0:
-            raise ValueError("data cannot be empty")
+            raise ValueError("data cannot be empty - the list must contain at least one row (even if just headers)")
         if not isinstance(data[0], list):
-            raise ValueError(f"data must be a 2D array (list of lists), first element is {type(data[0])}")
+            raise ValueError(f"data must be a 2D array (list of lists), first element is {type(data[0])}: {data[0]}")
+        
+        # Validate all rows are lists
+        for i, row in enumerate(data):
+            if not isinstance(row, list):
+                raise ValueError(f"Row {i} is not a list: {type(row)}: {row}")
+            # Convert all values to strings (Google Sheets API expects strings or numbers)
+            data[i] = [str(cell) if cell is not None else "" for cell in row]
+        
+        print(f"[add_data_to_sheet] ✅ Data validated: {len(data)} rows, {len(data[0]) if data else 0} columns", file=sys.stderr)
         
         body = {
             'values': data
@@ -276,15 +305,28 @@ async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
             body=body
         ).execute()
         
+        updated_cells = result.get('updatedCells', 0)
+        updated_range = result.get('updatedRange', '')
+        
+        print(f"[add_data_to_sheet] ✅ Successfully updated {updated_cells} cells in range {updated_range}", file=sys.stderr)
+        
         return {
-            "updated_cells": result.get('updatedCells', 0),
-            "updated_range": result.get('updatedRange', ''),
-            "success": True
+            "updated_cells": updated_cells,
+            "updated_range": updated_range,
+            "success": True,
+            "rows_added": len(data),
+            "columns_added": len(data[0]) if data else 0
         }
     except HttpError as error:
-        raise Exception(f"Google Sheets API error: {error}")
+        error_details = f"Google Sheets API error: {error}"
+        print(f"[add_data_to_sheet] ❌ {error_details}", file=sys.stderr)
+        raise Exception(error_details)
     except Exception as e:
-        raise Exception(f"Failed to add data: {e}")
+        error_details = f"Failed to add data: {e}"
+        print(f"[add_data_to_sheet] ❌ {error_details}", file=sys.stderr)
+        import traceback
+        print(f"[add_data_to_sheet] Traceback: {traceback.format_exc()}", file=sys.stderr)
+        raise Exception(error_details)
 
 
 async def get_sheet_link(args: Dict[str, Any]) -> Dict[str, str]:

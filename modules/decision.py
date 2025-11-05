@@ -74,13 +74,17 @@ For ANY user query, follow this standardized workflow:
 2. Create Sheet: FUNCTION_CALL: create_google_sheet|input.title="<relevant title based on query>"
    - Title should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Stock Prices", "Weather Data")
    - Generate title from query entities or keywords
-3. Add Data: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[header1,header2],[row1col1,row1col2],...]
-   - CRITICAL: Extract relevant data from search results (look in memory above)
-   - Limit to {perception.scope_limit or 10} rows if scope_limit is set
-   - Format as 2D array with headers in first row, data rows following
+3. Add Data: FUNCTION_CALL: add_data_to_sheet|input.sheet_id=<from step 2>|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],...]
+   - 🔴 CRITICAL: Extract relevant data from search results (look in memory above) - DO NOT use placeholder data
+   - Format MUST be: [[\"Header1\",\"Header2\"],[\"DataRow1Col1\",\"DataRow1Col2\"],[\"DataRow2Col1\",\"DataRow2Col2\"],...]
+   - First row MUST be headers with quotes: [\"Rank\",\"Name\",\"Score\"] or [\"Name\",\"Value\"]
+   - Each data row MUST be a list of quoted strings: [\"1\",\"Team A\",\"95\"] 
+   - Limit to {perception.scope_limit or 10} data rows (excluding header) if scope_limit is set
    - Use EXACT sheet_id from create_google_sheet result (check memory - look for sheet_id in STRUCTURED_DATA)
-   - Example formats: [["Name","Value"],["Item1","100"],["Item2","200"],...] OR [["Rank","Team","Score"],["1","TeamA","95"],["2","TeamB","87"],...]
+   - Example for rankings: [[\"Rank\",\"Team\",\"Score\"],[\"1\",\"TeamA\",\"95\"],[\"2\",\"TeamB\",\"87\"],[\"3\",\"TeamC\",\"82\"]]
+   - Example for generic: [[\"Name\",\"Value\"],[\"Item1\",\"100\"],[\"Item2\",\"200\"],[\"Item3\",\"150\"]]
    - Headers should match the data type (e.g., Name/Value for generic data, Rank/Team/Score for rankings, Date/Price for stocks)
+   - ⚠️ If you don't extract real data from search results, the sheet will be blank!
 4. Get Link: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
 5. Finally: FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: <link>]
    - ONLY return FINAL_ANSWER after ALL 4 steps are complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link)

@@ -305,7 +305,7 @@ class AgentLoop:
                                         break
                             
                             limit_text = f"top {scope_limit}" if scope_limit else "all available"
-                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract data from search results and add to sheet ({limit_text} results).\nUse: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],...]\n\nIMPORTANT: Extract relevant data from search results above. Format as 2D array with headers in first row, data rows following. Limit to {scope_limit} rows if scope_limit is set."
+                            workflow_guidance = f"\n\n✅ Sheet created successfully! Sheet ID: {sheet_id}\n\nNEXT: Extract data from search results and add to sheet ({limit_text} results).\n\n🔴 CRITICAL FORMATTING INSTRUCTIONS:\n- Use: add_data_to_sheet|input.sheet_id=\"{sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Row1Col1\",\"Row1Col2\"],[\"Row2Col1\",\"Row2Col2\"]]\n- Format MUST be: [[\"Header1\",\"Header2\"],[\"DataRow1Col1\",\"DataRow1Col2\"],[\"DataRow2Col1\",\"DataRow2Col2\"],...]\n- First row MUST be headers (e.g., [\"Rank\",\"Name\",\"Score\"])\n- Each row MUST be a list of strings: [\"Value1\",\"Value2\",\"Value3\"]\n- Extract data from search results above - DO NOT use placeholder data\n- Limit to {scope_limit} data rows (excluding header) if scope_limit is set\n- Example for 3 items: [[\"Rank\",\"Name\",\"Points\"],[\"1\",\"Team A\",\"95\"],[\"2\",\"Team B\",\"87\"],[\"3\",\"Team C\",\"82\"]]\n\n⚠️ If you don't extract real data, the sheet will be blank!"
                     elif "add_data_to_sheet" in tool_name.lower():
                         # Get sheet_id from arguments
                         sheet_id = ""
@@ -355,8 +355,11 @@ class AgentLoop:
     CRITICAL INSTRUCTIONS:
     - If you just created a sheet, you MUST extract relevant data from search results above
     - Look for patterns in search results (e.g., rankings, standings, scores, lists, tables, key-value pairs)
-    - Format data as: [["Header1","Header2"],["Row1Col1","Row1Col2"],["Row2Col1","Row2Col2"],...]
-    - Limit to {scope_limit} rows if scope_limit is set (currently: {scope_limit or 'no limit'})
+    - 🔴 Format data EXACTLY as: [["Header1","Header2"],["Row1Col1","Row1Col2"],["Row2Col1","Row2Col2"],...]
+    - 🔴 ALL values MUST be quoted strings: [["Rank","Name","Score"],["1","Team A","95"],["2","Team B","87"]]
+    - 🔴 First row MUST be headers: [["Rank","Name","Points"],...]
+    - 🔴 Each subsequent row MUST be data: ["1","Team A","95"]
+    - Limit to {scope_limit} data rows (excluding header) if scope_limit is set (currently: {scope_limit or 'no limit'})
     - Extract headers based on the data type found in search results:
       * For rankings/standings: ["Rank","Name","Value"] or ["Position","Item","Score"]
       * For lists/tables: ["Name","Value"] or ["Key","Data"]
@@ -364,6 +367,7 @@ class AgentLoop:
       * For generic data: ["Column1","Column2","Column3"] based on what's in the results
     - Use the EXACT sheet_id from the create_google_sheet result above (it's in the STRUCTURED_DATA section)
     - Do NOT skip this step - adding data is required!
+    - ⚠️ If you don't extract real data from search results, the sheet will remain blank!
     
     🔴 MANDATORY WORKFLOW (MUST COMPLETE ALL STEPS):
     1. Search → 2. Create Sheet → 3. Add Data → 4. Get Link → 5. FINAL_ANSWER
