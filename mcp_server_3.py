@@ -1,7 +1,7 @@
 from mcp.server.fastmcp import FastMCP, Context
 import httpx
 from bs4 import BeautifulSoup
-from typing import List, Dict, Optional, Any
+from typing import List
 from dataclasses import dataclass
 import urllib.parse
 import sys
@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 import time
 import re
+import json
 
 
 @dataclass
@@ -222,11 +223,51 @@ async def search(query: str, ctx: Context, max_results: int = 10) -> str:
         ctx: MCP context for logging
     """
     try:
+        # Log DuckDuckGoSearcher tool call
+        timestamp = datetime.now().isoformat()
+        log_entry = {
+            "timestamp": timestamp,
+            "tool": "DuckDuckGoSearcher",
+            "action": "web_search",
+            "query": query,
+            "max_results": max_results,
+            "status": "started"
+        }
+        print(f"[DuckDuckGoSearcher] 🔍 Web search initiated: query='{query}', max_results={max_results}", file=sys.stderr)
+        print(f"[DuckDuckGoSearcher] {json.dumps(log_entry)}", file=sys.stderr)
+        
+        start_time = time.time()
         results = await searcher.search(query, ctx, max_results)
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Log completion
+        log_entry_complete = {
+            "timestamp": datetime.now().isoformat(),
+            "tool": "DuckDuckGoSearcher",
+            "action": "web_search",
+            "query": query,
+            "results_count": len(results),
+            "duration_ms": round(duration_ms, 2),
+            "status": "completed"
+        }
+        print(f"[DuckDuckGoSearcher] ✅ Web search completed: {len(results)} results found in {duration_ms:.2f}ms", file=sys.stderr)
+        print(f"[DuckDuckGoSearcher] {json.dumps(log_entry_complete)}", file=sys.stderr)
+        
         return searcher.format_results_for_llm(results)
     except Exception as e:
+        error_msg = str(e)
+        log_entry_error = {
+            "timestamp": datetime.now().isoformat(),
+            "tool": "DuckDuckGoSearcher",
+            "action": "web_search",
+            "query": query,
+            "status": "error",
+            "error": error_msg
+        }
+        print(f"[DuckDuckGoSearcher] ❌ Web search failed: {error_msg}", file=sys.stderr)
+        print(f"[DuckDuckGoSearcher] {json.dumps(log_entry_error)}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        return f"An error occurred while searching: {str(e)}"
+        return f"An error occurred while searching: {error_msg}"
 
 
 @mcp.tool()

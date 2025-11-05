@@ -61,7 +61,7 @@ OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
 """
 
     try:
-        response = await model.generate_text(prompt, max_retries=3)
+        response = await model.generate_text(prompt, max_retries=3, prompt_type="perception")
 
         # Clean up raw if wrapped in markdown-style ```json
         raw = response.strip()

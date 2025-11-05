@@ -23,6 +23,20 @@ async def process_message(message: str, chat_id: str, result_obj: dict, multi_mc
     
     print(f"\n📩 Received Telegram message (ID: {message_id}): {message}")
     
+    # Send immediate acknowledgment to user
+    if chat_id:
+        try:
+            acknowledgment_message = "✅ Your question has been received! Processing started...\n\nI'm working on it, please wait for the complete response."
+            await multi_mcp.call_tool("send_telegram_message", {
+                "input": {
+                    "chat_id": chat_id,
+                    "text": acknowledgment_message
+                }
+            })
+            print(f"✅ Sent acknowledgment to Telegram (chat_id: {chat_id})")
+        except Exception as e:
+            print(f"⚠️ Failed to send acknowledgment: {e}")
+    
     # Create agent and process
     agent = AgentLoop(
         user_input=message,
@@ -30,7 +44,7 @@ async def process_message(message: str, chat_id: str, result_obj: dict, multi_mc
     )
     
     try:
-        # Process the request WITHOUT sending progress messages (no ping-pong)
+        # Process the request - agent will complete all steps before returning
         final_response = await agent.run()
         
         # Extract final answer
@@ -110,12 +124,23 @@ async def process_message(message: str, chat_id: str, result_obj: dict, multi_mc
         # Send ONLY final response back to Telegram when task completes
         if chat_id:
             try:
+                from modules.logger import get_logger
+                logger = get_logger()
+                
+                import time
+                start_time = time.time()
                 await multi_mcp.call_tool("send_telegram_message", {
                     "input": {
                         "chat_id": chat_id,
                         "text": telegram_message
                     }
                 })
+                duration_ms = (time.time() - start_time) * 1000
+                
+                if logger:
+                    logger.log_tool_call("send_telegram_message", {"chat_id": chat_id}, "sent", duration_ms)
+                    logger.log_workflow_step(999, "completion", "completed", "Telegram response sent")
+                    logger.log_step_completion("telegram_response", True, None)
                 print(f"✅ Sent completion message to Telegram (chat_id: {chat_id})")
                 if sheet_link:
                     print(f"✅ Included Google Sheet link in Telegram response")

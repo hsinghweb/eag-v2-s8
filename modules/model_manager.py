@@ -29,14 +29,35 @@ class ModelManager:
             api_key = os.getenv("GEMINI_API_KEY")
             self.client = genai.Client(api_key=api_key)
 
-    async def generate_text(self, prompt: str, max_retries: int = 3) -> str:
-        if self.model_type == "gemini":
-            return await self._gemini_generate_with_retry(prompt, max_retries)
-
-        elif self.model_type == "ollama":
-            return self._ollama_generate(prompt)
-
-        raise NotImplementedError(f"Unsupported model type: {self.model_type}")
+    async def generate_text(self, prompt: str, max_retries: int = 3, prompt_type: str = "other") -> str:
+        import time
+        from modules.logger import get_logger
+        
+        start_time = time.time()
+        model_name = self.model_info.get("model", "unknown")
+        
+        try:
+            if self.model_type == "gemini":
+                response = await self._gemini_generate_with_retry(prompt, max_retries)
+            elif self.model_type == "ollama":
+                response = self._ollama_generate(prompt)
+            else:
+                raise NotImplementedError(f"Unsupported model type: {self.model_type}")
+            
+            duration_ms = (time.time() - start_time) * 1000
+            logger = get_logger()
+            if logger:
+                logger.log_llm_call(model_name, prompt_type, prompt, response, duration_ms)
+            
+            return response
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            error_msg = str(e)
+            logger = get_logger()
+            if logger:
+                logger.log_llm_call(model_name, prompt_type, prompt, "", duration_ms, error_msg)
+                logger.log_error("llm_call_error", error_msg)
+            raise
 
     async def _gemini_generate_with_retry(self, prompt: str, max_retries: int = 3) -> str:
         """Generate text with retry logic for rate limits"""

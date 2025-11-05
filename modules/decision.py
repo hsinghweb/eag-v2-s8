@@ -118,7 +118,7 @@ IMPORTANT:
 
 
     try:
-        raw = (await model.generate_text(prompt, max_retries=3)).strip()
+        raw = (await model.generate_text(prompt, max_retries=3, prompt_type="decision")).strip()
         log("plan", f"LLM output: {raw}")
 
         for line in raw.splitlines():
