@@ -317,7 +317,7 @@ class AgentLoop:
                         # Extract link from result
                         sheet_link = ""
                         if isinstance(result_obj, dict):
-                            sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "")
+                            sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "") or result_obj.get("sheetUrl", "")
                         if sheet_link:
                             # Get email from .env or use placeholder
                             import os
@@ -327,13 +327,33 @@ class AgentLoop:
                             if email_from_env:
                                 email_to_use = email_from_env
                             else:
-                                email_to_use = "<GMAIL_USER_EMAIL_from_env>"
+                                email_to_use = ""  # Empty will auto-detect from .env in mcp_server_gmail
                             
                             subject_suggestion = "Data Results"
                             if self.current_perception and self.current_perception.entities:
                                 subject_suggestion = " ".join(self.current_perception.entities[:2]).title()
                             
-                            workflow_guidance = f"\n\nNEXT: Send email with link using: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet\"|sheet_link=\"{sheet_link}\"\n\nNOTE: Use GMAIL_USER_EMAIL from .env file (or leave empty to auto-detect)."
+                            workflow_guidance = f"\n\n✅ Sheet link retrieved: {sheet_link}\n\n🔴 CRITICAL FINAL STEP: You MUST send email with the sheet link!\n\nUse: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet with the requested information\"|sheet_link=\"{sheet_link}\"\n\nIMPORTANT: This is the FINAL step. After sending email, return FINAL_ANSWER with completion message."
+                        else:
+                            workflow_guidance = f"\n\n⚠️ Failed to get sheet link. Try again or check sheet_id is correct."
+                    elif "send_email_with_link" in tool_name.lower() or "send_email" in tool_name.lower():
+                        # Email sent successfully - task is complete!
+                        # Try to get sheet_link from memory or result
+                        email_sheet_link = ""
+                        if isinstance(result_obj, dict):
+                            email_sheet_link = result_obj.get("link", "") or result_obj.get("sheet_link", "")
+                        if not email_sheet_link:
+                            # Try to find from memory
+                            for mem in self.context.memory_trace:
+                                if hasattr(mem, 'tool_name') and mem.tool_name and "get_sheet_link" in mem.tool_name.lower():
+                                    if hasattr(mem, 'text') and 'link' in mem.text:
+                                        import re
+                                        link_match = re.search(r'https://docs\.google\.com[^\s"]+', mem.text)
+                                        if link_match:
+                                            email_sheet_link = link_match.group(0)
+                                            break
+                        
+                        workflow_guidance = f"\n\n✅ Email sent successfully! Task is complete.\n\nReturn FINAL_ANSWER: [Task completed. Sheet created and emailed successfully. Sheet link: {email_sheet_link if email_sheet_link else 'see email'}]"
                     
                     # Get search results for data extraction context
                     search_context = ""
@@ -370,9 +390,17 @@ class AgentLoop:
     - Use the EXACT sheet_id from the create_google_sheet result above (it's in the STRUCTURED_DATA section)
     - Do NOT skip this step - adding data is required!
     
-    If ALL steps are complete (search → create sheet → add data → get link → send email), return:
-    FINAL_ANSWER: [Task completed successfully. Summary: <what was done>]
+    🔴 MANDATORY WORKFLOW (MUST COMPLETE ALL STEPS):
+    1. Search → 2. Create Sheet → 3. Add Data → 4. Get Link → 5. Send Email → 6. FINAL_ANSWER
+    
+    Check which steps you've completed:
+    - Tools used so far: {', '.join(set(used_tools))}
+    
+    If you have completed ALL 5 steps (search, create_google_sheet, add_data_to_sheet, get_sheet_link, send_email_with_link), return:
+    FINAL_ANSWER: [Task completed successfully. Sheet created and emailed to user. Summary: <what was done>]
 
+    If you just got the sheet link (get_sheet_link), you MUST send email next - do NOT return FINAL_ANSWER yet!
+    
     Otherwise, return the next FUNCTION_CALL to continue the workflow."""
                 except Exception as e:
                     print(f"[error] ❌ Tool execution failed: {e}")

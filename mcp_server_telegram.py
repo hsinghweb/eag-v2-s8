@@ -21,6 +21,11 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 # Store last update ID to avoid processing same messages
 _last_update_id = 0
 _message_queue = []  # Simple queue for messages
+_processed_message_ids = set()  # Track processed message IDs to avoid duplicates
+_processed_update_ids = set()  # Track processed update IDs to avoid duplicates
+
+# Cleanup: Limit size of processed sets to prevent memory issues (keep last 1000)
+_MAX_PROCESSED_SIZE = 1000
 
 
 def mcp_log(level: str, message: str) -> None:
@@ -46,7 +51,7 @@ def get_updates(offset: int = None):
 
 def poll_telegram_messages():
     """Poll Telegram for new messages and queue them"""
-    global _last_update_id
+    global _last_update_id, _processed_message_ids, _processed_update_ids
     
     if not TELEGRAM_BOT_TOKEN:
         mcp_log("ERROR", "TELEGRAM_BOT_TOKEN not set in environment")
@@ -57,6 +62,13 @@ def poll_telegram_messages():
     if updates_response.get("ok"):
         for update in updates_response.get("result", []):
             update_id = update.get("update_id")
+            
+            # Skip if we've already processed this update
+            if update_id in _processed_update_ids:
+                mcp_log("INFO", f"Skipping already processed update_id: {update_id}")
+                _last_update_id = max(_last_update_id, update_id)
+                continue
+            
             _last_update_id = max(_last_update_id, update_id)
             
             message = update.get("message")
@@ -65,13 +77,31 @@ def poll_telegram_messages():
                 chat_id = str(message.get("chat", {}).get("id"))
                 message_id = message.get("message_id")
                 
-                if text:
-                    _message_queue.append({
-                        "message": text,
-                        "chat_id": chat_id,
-                        "message_id": message_id
-                    })
-                    mcp_log("INFO", f"Received message: {text[:50]}...")
+                # Skip if we've already processed this message
+                if message_id in _processed_message_ids:
+                    mcp_log("INFO", f"Skipping already processed message_id: {message_id}")
+                    _processed_update_ids.add(update_id)
+                    continue
+                
+                if text and text.strip():
+                    # Only add if not already in queue
+                    already_in_queue = any(
+                        msg.get("message_id") == message_id for msg in _message_queue
+                    )
+                    
+                    if not already_in_queue:
+                        _message_queue.append({
+                            "message": text,
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "update_id": update_id
+                        })
+                        mcp_log("INFO", f"Queued new message (ID: {message_id}): {text[:50]}...")
+                    else:
+                        mcp_log("INFO", f"Message ID {message_id} already in queue, skipping")
+                    
+                    # Mark update as processed
+                    _processed_update_ids.add(update_id)
 
 
 @mcp.tool()
@@ -96,11 +126,37 @@ def receive_telegram_message() -> TelegramMessageOutput:
     # Return latest message from queue, or empty if none
     if _message_queue:
         msg = _message_queue.pop(0)  # FIFO
-        mcp_log("INFO", f"Returning message: {msg['message'][:50]}...")
+        message_id = msg.get("message_id", 0)
+        update_id = msg.get("update_id", 0)
+        
+        # Mark message as processed to avoid reprocessing
+        if message_id:
+            _processed_message_ids.add(message_id)
+        if update_id:
+            _processed_update_ids.add(update_id)
+        
+        # Cleanup old processed IDs to prevent memory issues (keep sets manageable)
+        if len(_processed_message_ids) > _MAX_PROCESSED_SIZE:
+            # Remove half of the entries (sets are unordered, so we remove arbitrary ones)
+            to_remove = list(_processed_message_ids)[:_MAX_PROCESSED_SIZE//2]
+            for msg_id in to_remove:
+                _processed_message_ids.discard(msg_id)
+            mcp_log("INFO", f"Cleaned up {len(to_remove)} old processed message IDs. Remaining: {len(_processed_message_ids)}")
+        
+        if len(_processed_update_ids) > _MAX_PROCESSED_SIZE:
+            # Remove half of the entries
+            to_remove = list(_processed_update_ids)[:_MAX_PROCESSED_SIZE//2]
+            for upd_id in to_remove:
+                _processed_update_ids.discard(upd_id)
+            mcp_log("INFO", f"Cleaned up {len(to_remove)} old processed update IDs. Remaining: {len(_processed_update_ids)}")
+        
+        mcp_log("INFO", f"Returning message (ID: {message_id}, Update: {update_id}): {msg['message'][:50]}...")
+        mcp_log("INFO", f"Marked message_id {message_id} as processed. Queue size: {len(_message_queue)}, Processed: {len(_processed_message_ids)}")
+        
         return TelegramMessageOutput(
             message=msg["message"],
             chat_id=msg["chat_id"],
-            message_id=msg["message_id"]
+            message_id=message_id
         )
     else:
         return TelegramMessageOutput(

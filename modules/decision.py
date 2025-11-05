@@ -83,15 +83,23 @@ For ANY user query, follow this standardized workflow:
    - Headers should match the data type (e.g., Name/Value for generic data, Rank/Team/Score for rankings, Date/Price for stocks)
 4. Get Link: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
 5. Send Email: FUNCTION_CALL: send_email_with_link|to=<email from .env>|subject="<relevant subject>"|body="<relevant body>"|sheet_link=<from step 4>
+   - 🔴 THIS IS A MANDATORY STEP - DO NOT SKIP!
    - Subject should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Data Results")
-   - Body should mention what data is in the sheet
-   - Use the email address from .env file (GMAIL_USER_EMAIL)
+   - Body should mention what data is in the sheet (e.g., "Here is the data sheet with the requested information")
+   - Use the email address from .env file (GMAIL_USER_EMAIL) or leave empty to auto-detect
+   - Use the EXACT sheet_link from step 4 (get_sheet_link result)
 6. Finally: FINAL_ANSWER: [Task completed. Sheet created at <link> and emailed to <email>]
+   - ONLY return FINAL_ANSWER after ALL 5 steps are complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link, send_email_with_link)
 
 IMPORTANT: 
+- 🔴 ALL 5 STEPS ARE MANDATORY: Search → Create Sheet → Add Data → Get Link → Send Email
 - For step 3: Extract ONLY the top {perception.scope_limit or 10} results if scope_limit is set. Limit data rows accordingly.
-- For step 5: Use GMAIL_USER_EMAIL from .env file (do NOT use "me" or placeholder)
+- For step 4: You MUST get the sheet link before sending email
+- For step 5: You MUST send email with the sheet link - this is the final step before FINAL_ANSWER
+- For step 5: Use GMAIL_USER_EMAIL from .env file (or leave empty to auto-detect)
 - ALWAYS use the sheet_id from the create_google_sheet result when calling add_data_to_sheet and get_sheet_link
+- ALWAYS use the sheet_link from get_sheet_link result when calling send_email_with_link
+- Do NOT return FINAL_ANSWER until ALL 5 steps are complete (especially send_email_with_link)
 - This workflow applies to ANY query type - extract data patterns, create relevant headers, and format accordingly
 
 ---

@@ -91,7 +91,10 @@ async def poll_and_process():
                     message = raw_text.strip() if raw_text else ""
             
             if message and message.strip() and not message.startswith("ERROR"):
-                print(f"\n📩 Received Telegram message: {message}")
+                # Extract message_id to track processed messages
+                message_id = result_obj.get("message_id") if isinstance(result_obj, dict) else None
+                
+                print(f"\n📩 Received Telegram message (ID: {message_id}): {message}")
                 
                 # Create agent and process
                 agent = AgentLoop(
@@ -114,6 +117,7 @@ async def poll_and_process():
                                     "text": f"✅ Task Completed!\n\n{answer_text}"
                                 }
                             })
+                            print(f"✅ Sent completion message to Telegram (chat_id: {chat_id})")
                         except Exception as e:
                             log("error", f"Failed to send Telegram response: {e}")
                 
@@ -133,8 +137,12 @@ async def poll_and_process():
                             })
                         except:
                             pass
+                
+                # Mark message as processed (already done in mcp_server_telegram, but log it)
+                if message_id:
+                    print(f"✅ Message (ID: {message_id}) processed and marked as complete. Will not process again.")
             
-            # Poll interval
+            # Poll interval - check every 5 seconds for new messages
             await asyncio.sleep(5)  # Check every 5 seconds
             
         except KeyboardInterrupt:
