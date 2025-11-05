@@ -87,7 +87,9 @@ class AgentLoop:
                             user_input=query,
                             intent="process query",
                             entities=[],
-                            tool_hint="search" if any(word in query.lower() for word in ["find", "search", "get", "show"]) else None
+                            tool_hint="search" if any(word in query.lower() for word in ["find", "search", "get", "show"]) else None,
+                            scope_limit=10 if any(word in query.lower() for word in ["standings", "rankings", "leaderboard", "points"]) else None,
+                            scope_type="top" if any(word in query.lower() for word in ["standings", "rankings", "leaderboard", "points"]) else None
                         )
                         print(f"[perception] Using fallback perception: {perception.intent}, {perception.tool_hint}")
 

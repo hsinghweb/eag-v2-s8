@@ -100,23 +100,12 @@ async def poll_and_process():
                 )
                 
                 try:
-                    # Send progress message to Telegram
-                    if chat_id:
-                        try:
-                            await multi_mcp.call_tool("send_telegram_message", {
-                                "input": {
-                                    "chat_id": chat_id,
-                                    "text": "🔄 Processing your request... This may take a few steps."
-                                }
-                            })
-                        except:
-                            pass  # Don't fail if telegram send fails
-                    
+                    # Process the request WITHOUT sending progress messages (no ping-pong)
                     final_response = await agent.run()
                     answer_text = final_response.replace("FINAL_ANSWER:", "").strip()
                     print("\n💡 Final Answer:\n", answer_text)
                     
-                    # Send final response back to Telegram
+                    # Send ONLY final response back to Telegram when task completes
                     if chat_id:
                         try:
                             await multi_mcp.call_tool("send_telegram_message", {

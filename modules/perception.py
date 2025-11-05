@@ -109,8 +109,7 @@ OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
         # Auto-detect scope for common queries
         if not parsed.get("scope_limit") and not parsed.get("scope_type"):
             user_lower = user_input.lower()
-            # Check for explicit numbers
-            import re
+            # Check for explicit numbers (re is already imported at top)
             top_match = re.search(r'top\s+(\d+)', user_lower)
             if top_match:
                 parsed["scope_limit"] = int(top_match.group(1))
@@ -152,4 +151,12 @@ OUTPUT ONLY THE JSON DICTIONARY, NOTHING ELSE.
 
     except Exception as e:
         print(f"[perception] ⚠️ LLM perception failed: {e}")
-        return PerceptionResult(user_input=user_input)
+        # Return a valid PerceptionResult with all required fields
+        return PerceptionResult(
+            user_input=user_input,
+            intent="process query",
+            entities=[],
+            tool_hint="search" if any(word in user_input.lower() for word in ["find", "search", "get", "show"]) else None,
+            scope_limit=10 if any(word in user_input.lower() for word in ["standings", "rankings", "leaderboard", "points"]) else None,
+            scope_type="top" if any(word in user_input.lower() for word in ["standings", "rankings", "leaderboard", "points"]) else None
+        )
