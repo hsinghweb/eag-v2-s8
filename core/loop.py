@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from typing import Any
 from core.context import AgentContext
 from core.session import MultiMCP
 from core.strategy import decide_next_action
@@ -158,6 +159,24 @@ class AgentLoop:
             for key, value in kwargs.items():
                 self._successful_steps[step_name][key] = value
             print(f"[workflow] ✅ Step '{step_name}' marked as completed and stored")
+    
+    def _get_next_step_guidance(self, next_step: str) -> str:
+        """Get guidance for the next required step"""
+        if next_step == "search":
+            return "Use: search|query=\"<your search query>\""
+        elif next_step == "create_sheet":
+            sheet_title = "Data Results"
+            if self.current_perception and self.current_perception.entities:
+                sheet_title = " ".join(self.current_perception.entities[:2]).title()
+            return f"Use: create_google_sheet|input.title=\"{sheet_title}\""
+        elif next_step == "add_data":
+            stored_sheet_id = self._created_sheet_id or "YOUR_SHEET_ID"
+            return f"Use: add_data_to_sheet|input.sheet_id=\"{stored_sheet_id}\"|input.data=[[\"Header1\",\"Header2\"],[\"Data1\",\"Data2\"]]\n⚠️ Extract data from search results in memory above!"
+        elif next_step == "get_link":
+            stored_sheet_id = self._created_sheet_id or "YOUR_SHEET_ID"
+            return f"Use: get_sheet_link|input.sheet_id=\"{stored_sheet_id}\""
+        else:
+            return "Return FINAL_ANSWER"
 
     async def run(self) -> str:
         print(f"[agent] Starting session: {self.context.session_id}")
@@ -366,12 +385,33 @@ Complete the missing steps before returning FINAL_ANSWER."""
                 try:
                     tool_name, arguments = parse_function_call(plan)
                     
-                    # Check if this step is already completed - skip if so
+                    # Check if this step is already completed - skip if so and guide to next step
                     step_already_completed = False
+                    next_step, next_step_desc = self.get_next_required_step()
+                    
                     if "search" in tool_name.lower() or "search_documents" in tool_name.lower():
                         if self._successful_steps['search']['completed']:
                             print(f"[workflow] ⏭️ Search step already completed - skipping retry")
                             step_already_completed = True
+                            # Get stored search results from memory
+                            stored_search_result = self._successful_steps['search'].get('result', '')
+                            # Guide LLM to next step using stored results
+                            if next_step != "final_answer":
+                                query = f"""Original user task: {self.context.user_input}
+
+❌ STOP: You tried to call 'search' again, but search is ALREADY COMPLETED.
+
+✅ Search results are already stored in memory (see above). Use those results - DO NOT search again.
+
+NEXT STEP: {next_step_desc}
+{self._get_next_step_guidance(next_step)}
+
+⚠️ IMPORTANT: Look at the memory/context above - the search results are there. Use them directly."""
+                            else:
+                                query = f"""Original user task: {self.context.user_input}
+
+Search already completed. All steps complete. Return FINAL_ANSWER."""
+                            
                     elif "create_google_sheet" in tool_name.lower():
                         if self._successful_steps['create_sheet']['completed']:
                             print(f"[workflow] ⏭️ Sheet creation already completed - skipping retry")
@@ -379,22 +419,42 @@ Complete the missing steps before returning FINAL_ANSWER."""
                             # Use stored sheet_id
                             stored_result = self._successful_steps['create_sheet']
                             if stored_result.get('sheet_id'):
-                                result_obj = {
-                                    "sheet_id": stored_result['sheet_id'],
-                                    "sheet_url": stored_result.get('sheet_url', f"https://docs.google.com/spreadsheets/d/{stored_result['sheet_id']}/edit"),
-                                    "message": "Using already created sheet"
-                                }
-                                # Continue as if tool was called successfully
-                                step_key = f"step_{step}"
-                                completed_steps.add(step_key)
-                                query = f"""Original user task: {self.context.user_input}
+                                # Guide LLM to next step
+                                if next_step != "final_answer":
+                                    query = f"""Original user task: {self.context.user_input}
 
-Sheet already created (ID: {stored_result['sheet_id']}). Proceed to next step: add_data_to_sheet"""
-                                continue
+❌ STOP: You tried to create a sheet again, but a sheet is ALREADY CREATED.
+
+✅ Sheet already exists (ID: {stored_result['sheet_id']}). Use this existing sheet_id.
+
+NEXT STEP: {next_step_desc}
+{self._get_next_step_guidance(next_step)}
+
+⚠️ IMPORTANT: Use the existing sheet_id: {stored_result['sheet_id']}"""
+                                else:
+                                    query = f"""Original user task: {self.context.user_input}
+
+Sheet already created. All steps complete. Return FINAL_ANSWER."""
+                            
                     elif "add_data_to_sheet" in tool_name.lower():
                         if self._successful_steps['add_data']['completed']:
                             print(f"[workflow] ⏭️ Data addition already completed - skipping retry")
                             step_already_completed = True
+                            # Guide LLM to next step
+                            if next_step != "final_answer":
+                                query = f"""Original user task: {self.context.user_input}
+
+❌ STOP: You tried to add data again, but data is ALREADY ADDED to the sheet.
+
+✅ Data addition is complete. Proceed to next step.
+
+NEXT STEP: {next_step_desc}
+{self._get_next_step_guidance(next_step)}"""
+                            else:
+                                query = f"""Original user task: {self.context.user_input}
+
+Data already added. All steps complete. Return FINAL_ANSWER."""
+                            
                     elif "get_sheet_link" in tool_name.lower():
                         if self._successful_steps['get_link']['completed']:
                             print(f"[workflow] ⏭️ Link retrieval already completed - skipping retry")
@@ -416,7 +476,8 @@ Sheet already created (ID: {stored_result['sheet_id']}). Proceed to next step: a
                                     break
                     
                     if step_already_completed:
-                        # Skip this tool call but continue workflow
+                        # Update query to guide LLM to next step, then continue to next iteration
+                        print(f"[workflow] 🔄 Updating query to guide LLM to next step: {next_step}")
                         continue
                     
                     # Check if this step has exceeded max retries (track per step, not per tool)

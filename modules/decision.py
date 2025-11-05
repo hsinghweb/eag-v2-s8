@@ -67,10 +67,12 @@ Respond in **exactly one line** using one of the following formats:
 - Step: {step_num} of {max_steps} ({remaining_steps} steps remaining)
 - {'⚠️ LAST FEW STEPS - Must complete task soon!' if is_last_step else ''}
 - Tools already used: {used_tools_text}
-- ✅ Completed steps (DO NOT retry these): {completed_steps_text}
-- Memory from previous steps: 
+- ✅ Completed steps (DO NOT retry these - use results from memory): {completed_steps_text}
+- Memory from previous steps (contains search results, sheet IDs, etc.): 
 {memory_texts}
 {tool_context}
+
+🔴 CRITICAL: If a step is marked as "completed" above, DO NOT call that tool again. Use the results from memory instead.
 
 🎯 User Request: "{perception.user_input}"
 - Intent: {perception.intent or 'Not specified'}
