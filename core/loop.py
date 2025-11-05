@@ -148,15 +148,48 @@ class AgentLoop:
 
                 # Check if plan is FINAL_ANSWER (task completed)
                 if "FINAL_ANSWER:" in plan:
-                    final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
-                    if final_lines:
-                        self.context.final_answer = final_lines[-1].strip()
-                        print(f"[phase] ✅ COMPLETION: Task completed successfully")
-                        break
+                    # Verify that email was sent before allowing FINAL_ANSWER
+                    used_tools_for_check = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
+                    email_sent = any("send_email" in tool.lower() for tool in used_tools_for_check)
+                    
+                    if not email_sent:
+                        print(f"[phase] ⚠️ WARNING: Agent tried to return FINAL_ANSWER without sending email!")
+                        print(f"[phase] 🔴 FORCING: Agent must send email before completion")
+                        # Override the plan to force email sending
+                        # Get sheet_link from memory
+                        sheet_link = ""
+                        for mem in self.context.memory_trace:
+                            if hasattr(mem, 'tool_name') and mem.tool_name and "get_sheet_link" in mem.tool_name.lower():
+                                if hasattr(mem, 'text') and mem.text:
+                                    import re
+                                    link_match = re.search(r'https://docs\.google\.com[^\s"]+', str(mem.text))
+                                    if link_match:
+                                        sheet_link = link_match.group(0)
+                                        break
+                        
+                        if sheet_link:
+                            # Force email step - override plan
+                            plan = f'FUNCTION_CALL: send_email_with_link|to=""|subject="Data Results"|body="Here is the data sheet with the requested information"|sheet_link="{sheet_link}"'
+                            print(f"[phase] 🔄 FORCED: Overriding FINAL_ANSWER to send email first: {plan}")
+                            # Continue to execution phase with forced email plan
+                        else:
+                            print(f"[phase] ⚠️ No sheet link found in memory. Cannot force email.")
+                            final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
+                            if final_lines:
+                                self.context.final_answer = final_lines[-1].strip()
+                                print(f"[phase] ✅ COMPLETION: Task completed (no email sent - no sheet link found)")
+                                break
                     else:
-                        self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
-                        print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
-                        break
+                        # Email was sent, allow FINAL_ANSWER
+                        final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
+                        if final_lines:
+                            self.context.final_answer = final_lines[-1].strip()
+                            print(f"[phase] ✅ COMPLETION: Task completed successfully (email sent)")
+                            break
+                        else:
+                            self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
+                            print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
+                            break
                 
                 # Force completion if we're at the last step
                 if step >= max_steps - 1:
@@ -396,11 +429,21 @@ class AgentLoop:
     Check which steps you've completed:
     - Tools used so far: {', '.join(set(used_tools))}
     
-    If you have completed ALL 5 steps (search, create_google_sheet, add_data_to_sheet, get_sheet_link, send_email_with_link), return:
+    🔴 CRITICAL: You CANNOT return FINAL_ANSWER until you have called send_email_with_link!
+    
+    Required steps checklist:
+    - [ ] search or search_documents (completed if 'search' in tools used)
+    - [ ] create_google_sheet (completed if 'create_google_sheet' in tools used)
+    - [ ] add_data_to_sheet (completed if 'add_data_to_sheet' in tools used)
+    - [ ] get_sheet_link (completed if 'get_sheet_link' in tools used)
+    - [ ] send_email_with_link (MUST BE COMPLETED BEFORE FINAL_ANSWER!)
+    
+    If you just got the sheet link (get_sheet_link), you MUST call send_email_with_link next!
+    Do NOT return FINAL_ANSWER until send_email_with_link has been called successfully!
+    
+    If you have completed ALL 5 steps (including send_email_with_link), return:
     FINAL_ANSWER: [Task completed successfully. Sheet created and emailed to user. Summary: <what was done>]
 
-    If you just got the sheet link (get_sheet_link), you MUST send email next - do NOT return FINAL_ANSWER yet!
-    
     Otherwise, return the next FUNCTION_CALL to continue the workflow."""
                 except Exception as e:
                     print(f"[error] ❌ Tool execution failed: {e}")

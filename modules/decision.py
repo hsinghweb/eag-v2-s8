@@ -113,7 +113,13 @@ IMPORTANT:
 - 📝 Use `add_data_to_sheet` to add data (format as 2D array: [["Header1","Header2"],["Row1Col1","Row1Col2"]])
 - 🔗 Use `get_sheet_link` to get shareable URL
 - 📧 Use `send_email_with_link` to send email with sheet link
-- ✅ Once all steps complete, return FINAL_ANSWER with summary
+- 🔴 YOU CANNOT RETURN FINAL_ANSWER UNTIL send_email_with_link HAS BEEN CALLED!
+- ✅ Once ALL 5 steps complete (including send_email_with_link), return FINAL_ANSWER with summary
+
+🔴 EMAIL ENFORCEMENT:
+- If you have called get_sheet_link, you MUST call send_email_with_link next
+- Do NOT return FINAL_ANSWER if you haven't called send_email_with_link
+- Check your memory/used_tools to verify send_email_with_link was called before FINAL_ANSWER
 - {'⏰ STEP {step_num} OF {max_steps} - You must return FINAL_ANSWER if task cannot be completed or is done!' if is_last_step else ''}
 - ❌ NEVER output explanation text — only FUNCTION_CALL or FINAL_ANSWER
 - 💡 If stuck or uncertain, return: FINAL_ANSWER: [Progress: <what was done>. Issue: <what's blocking>. Attempted: {used_tools_text if used_tools_text != 'None yet' else 'No tools yet'}]

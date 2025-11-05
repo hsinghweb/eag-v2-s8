@@ -1,22 +1,16 @@
 """
 MCP Server for Gmail (Stdio Transport)
-Provides tools to send emails via Gmail API.
+Provides tools to send emails via Gmail SMTP.
 """
 
 from mcp.server.fastmcp import FastMCP
 import sys
 import os
-import base64
+import smtplib
+import traceback
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
-
-# Google API imports
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 from models import SendEmailInput, SendEmailOutput
 
@@ -24,173 +18,147 @@ load_dotenv()
 
 mcp = FastMCP("Gmail")
 
-# Gmail API Scopes
-SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Global service object
-gmail_service = None
-
-
-def get_gmail_credentials():
-    """Get or refresh Gmail API credentials"""
-    creds = None
-    token_file = os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json")
-    credentials_file = os.getenv("GMAIL_CREDENTIALS_FILE", "gmail_credentials.json")
-    
-    # Load existing token
-    if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-    
-    # If no valid credentials, run OAuth flow
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(credentials_file):
-                raise FileNotFoundError(
-                    f"Gmail credentials file not found: {credentials_file}\n"
-                    "Please download OAuth2 credentials from Google Cloud Console"
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-            creds = flow.run_local_server(port=0)
-        
-        # Save credentials for next run
-        with open(token_file, 'w') as token:
-            token.write(creds.to_json())
-    
-    return creds
+def mcp_log(level: str, message: str) -> None:
+    """Log to stderr for MCP server"""
+    sys.stderr.write(f"{level}: {message}\n")
+    sys.stderr.flush()
 
 
-def get_gmail_account_email():
-    """Get the email address associated with the Gmail account"""
+def send_email_via_smtp(to: str, subject: str, body: str, link: str = None) -> dict:
+    """
+    Send an email via Gmail SMTP using app password.
+    Uses fixed sender (GMAIL_ADDRESS) and recipient (RECIPIENT_EMAIL) from .env
+    """
     try:
-        token_file = os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json")
-        if os.path.exists(token_file):
-            import json
-            with open(token_file, 'r') as f:
-                token_data = json.load(f)
-                return token_data.get("account", "")
-    except:
-        pass
-    return ""
-
-def initialize_gmail_service():
-    """Initialize Gmail service on first use"""
-    global gmail_service
-    if gmail_service is None:
+        # Retrieve Gmail credentials and recipient from .env
+        gmail_address = os.getenv("GMAIL_ADDRESS")
+        gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+        recipient_email = os.getenv("RECIPIENT_EMAIL")
+        
+        if not all([gmail_address, gmail_app_password, recipient_email]):
+            error_msg = "Missing GMAIL_ADDRESS, GMAIL_APP_PASSWORD, or RECIPIENT_EMAIL in .env file"
+            mcp_log("ERROR", error_msg)
+            return {
+                "message_id": "",
+                "success": False,
+                "error": error_msg
+            }
+        
+        # Validate Gmail address and recipient email format
+        if not (gmail_address.endswith('@gmail.com') and '@' in recipient_email):
+            error_msg = f"Invalid email format: GMAIL_ADDRESS={gmail_address}, RECIPIENT_EMAIL={recipient_email}"
+            mcp_log("ERROR", error_msg)
+            return {
+                "message_id": "",
+                "success": False,
+                "error": error_msg
+            }
+        
+        # Use RECIPIENT_EMAIL from .env (ignore 'to' parameter)
+        actual_recipient = recipient_email
+        
+        # Create the email message
+        if link:
+            # Create HTML email with link
+            msg = MIMEMultipart()
+            msg['Subject'] = subject
+            msg['From'] = gmail_address
+            msg['To'] = actual_recipient
+            
+            html_body = f"""
+            <html>
+              <body>
+                <p>{body}</p>
+                <p><a href="{link}" target="_blank">Click here to open: {link}</a></p>
+              </body>
+            </html>
+            """
+            msg.attach(MIMEText(html_body, 'html'))
+        else:
+            # Plain text email
+            msg = MIMEText(body)
+            msg['Subject'] = subject
+            msg['From'] = gmail_address
+            msg['To'] = actual_recipient
+        
+        # Connect to Gmail's SMTP server
         try:
-            creds = get_gmail_credentials()
-            gmail_service = build('gmail', 'v1', credentials=creds)
-            # Try to get profile to get email
-            try:
-                profile = gmail_service.users().getProfile(userId='me').execute()
-                email = profile.get('emailAddress', '')
-                if email:
-                    print(f"✅ Gmail service initialized for: {email}", file=sys.stderr)
-                    # Save email to token file
-                    token_file = os.getenv("GMAIL_TOKEN_FILE", "gmail_token.json")
-                    if os.path.exists(token_file):
-                        import json
-                        with open(token_file, 'r') as f:
-                            token_data = json.load(f)
-                        token_data['account'] = email
-                        with open(token_file, 'w') as f:
-                            json.dump(token_data, f)
-            except:
-                print("✅ Gmail service initialized", file=sys.stderr)
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                mcp_log("INFO", "Connecting to Gmail SMTP server (smtp.gmail.com:465)")
+                server.login(gmail_address, gmail_app_password)
+                mcp_log("INFO", f"Logged in as {gmail_address}")
+                server.sendmail(gmail_address, actual_recipient, msg.as_string())
+                mcp_log("INFO", f"Email sent successfully to {actual_recipient}")
+                
+                return {
+                    "message_id": "smtp_sent",
+                    "success": True,
+                    "error": None
+                }
+        except smtplib.SMTPAuthenticationError as e:
+            error_msg = f"SMTP Authentication failed: {str(e)}. Ensure GMAIL_APP_PASSWORD is correct and 2-Step Verification is enabled."
+            mcp_log("ERROR", error_msg)
+            return {
+                "message_id": "",
+                "success": False,
+                "error": error_msg
+            }
         except Exception as e:
-            print(f"❌ Failed to initialize Gmail service: {e}", file=sys.stderr)
-            raise
+            error_msg = f"Failed to send email: {str(e)}"
+            mcp_log("ERROR", error_msg)
+            return {
+                "message_id": "",
+                "success": False,
+                "error": error_msg
+            }
+        
+    except Exception as e:
+        error_msg = f"Error in send_email_via_smtp: {str(e)}"
+        mcp_log("ERROR", error_msg)
+        mcp_log("ERROR", traceback.format_exc())
+        return {
+            "message_id": "",
+            "success": False,
+            "error": error_msg
+        }
 
-
-def create_message(to: str, subject: str, body: str, link: str = None) -> dict:
-    """Create a message for sending via Gmail API"""
-    message = MIMEMultipart()
-    message['to'] = to
-    message['subject'] = subject
-    
-    # Add link to body if provided
-    if link:
-        html_body = f"""
-        <html>
-          <body>
-            <p>{body}</p>
-            <p><a href="{link}" target="_blank">Click here to open: {link}</a></p>
-          </body>
-        </html>
-        """
-        message.attach(MIMEText(html_body, 'html'))
-    else:
-        message.attach(MIMEText(body, 'plain'))
-    
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
-    return {'raw': raw_message}
-
-
-def get_user_email():
-    """Helper to get user's Gmail email address from .env or OAuth token"""
-    # First try to get from .env
-    email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
-    if email_from_env:
-        return email_from_env
-    
-    # Fallback to OAuth account email
-    initialize_gmail_service()
-    email = get_gmail_account_email()
-    if not email:
-        try:
-            profile = gmail_service.users().getProfile(userId='me').execute()
-            email = profile.get('emailAddress', '')
-        except:
-            pass
-    return email
 
 @mcp.tool()
 def send_email(input: SendEmailInput) -> SendEmailOutput:
     """
-    Send an email via Gmail.
+    Send an email via Gmail SMTP.
+    Uses fixed sender (GMAIL_ADDRESS) and recipient (RECIPIENT_EMAIL) from .env.
     Usage: send_email|input.to="user@example.com"|input.subject="F1 Standings"|input.body="Here is the sheet"|input.link="https://docs.google.com/spreadsheets/d/..."
+    
+    Note: The 'to' parameter is ignored - always uses RECIPIENT_EMAIL from .env
     """
     try:
-        initialize_gmail_service()
-        
         # Handle both nested input and direct args
         if isinstance(input, dict):
-            to = input.get("to")
-            subject = input.get("subject")
-            body = input.get("body")
+            subject = input.get("subject", "")
+            body = input.get("body", "")
             link = input.get("link")
         else:
-            to = input.to
             subject = input.subject
             body = input.body
             link = input.link
         
-        message = create_message(to, subject, body, link)
-        
-        sent_message = gmail_service.users().messages().send(
-            userId='me',
-            body=message
-        ).execute()
-        
-        message_id = sent_message.get('id')
-        
-        print(f"✅ Email sent to {to}", file=sys.stderr)
-        
-        return SendEmailOutput(
-            message_id=message_id,
-            success=True
+        result = send_email_via_smtp(
+            to="",  # Ignored - uses RECIPIENT_EMAIL from .env
+            subject=subject,
+            body=body,
+            link=link
         )
-    except HttpError as error:
-        error_msg = f"Gmail API error: {error}"
-        print(f"❌ {error_msg}", file=sys.stderr)
+        
         return SendEmailOutput(
-            message_id="",
-            success=False
+            message_id=result.get("message_id", ""),
+            success=result.get("success", False)
         )
     except Exception as e:
         error_msg = f"Failed to send email: {e}"
-        print(f"❌ {error_msg}", file=sys.stderr)
+        mcp_log("ERROR", error_msg)
         return SendEmailOutput(
             message_id="",
             success=False
@@ -200,34 +168,31 @@ def send_email(input: SendEmailInput) -> SendEmailOutput:
 @mcp.tool()
 def send_email_with_link(to: str, subject: str, body: str, sheet_link: str) -> SendEmailOutput:
     """
-    Send an email with a Google Sheet link.
+    Send an email with a Google Sheet link via Gmail SMTP.
+    Uses fixed sender (GMAIL_ADDRESS) and recipient (RECIPIENT_EMAIL) from .env.
     Usage: send_email_with_link|to="user@example.com"|subject="F1 Standings"|body="Here is your F1 standings sheet"|sheet_link="https://docs.google.com/spreadsheets/d/..."
     
-    Note: If 'to' parameter is not provided or is "me", will use the authenticated Gmail account.
+    Note: The 'to' parameter is ignored - always uses RECIPIENT_EMAIL from .env
     """
-    # If 'to' is "me" or not provided, try to get from .env or credentials
-    if not to or to.lower() in ["me", "", "self", "yourself", "<your_gmail_address>", "<your_email>", "<gmail_user_email_from_env>"]:
-        # First try .env file
-        email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
-        if email_from_env:
-            to = email_from_env
-            print(f"Using Gmail email from .env: {to}", file=sys.stderr)
-        else:
-            # Fallback to OAuth account email
-            initialize_gmail_service()
-            email = get_user_email()  # This already checks .env first
-            if email:
-                to = email
-                print(f"Using Gmail account email: {to}", file=sys.stderr)
-    
-    # If still no email, return error
-    if not to or to.lower() in ["me", "self", "yourself"]:
+    try:
+        result = send_email_via_smtp(
+            to="",  # Ignored - uses RECIPIENT_EMAIL from .env
+            subject=subject,
+            body=body,
+            link=sheet_link
+        )
+        
+        return SendEmailOutput(
+            message_id=result.get("message_id", ""),
+            success=result.get("success", False)
+        )
+    except Exception as e:
+        error_msg = f"Failed to send email: {str(e)}"
+        mcp_log("ERROR", error_msg)
         return SendEmailOutput(
             message_id="",
             success=False
         )
-    
-    return send_email(SendEmailInput(to=to, subject=subject, body=body, link=sheet_link))
 
 
 if __name__ == "__main__":
@@ -237,4 +202,3 @@ if __name__ == "__main__":
     else:
         mcp.run(transport="stdio")
         print("\nShutting down...")
-

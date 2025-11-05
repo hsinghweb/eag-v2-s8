@@ -34,7 +34,11 @@ def mcp_log(level: str, message: str) -> None:
 
 
 def get_updates(offset: int = None):
-    """Fetch updates from Telegram Bot API"""
+    """
+    Fetch updates from Telegram Bot API.
+    If offset is provided, Telegram will skip all updates up to and including that offset.
+    This ensures we only get NEW updates after the agent starts.
+    """
     try:
         url = f"{TELEGRAM_API_URL}/getUpdates"
         params = {"timeout": 30}
@@ -49,6 +53,33 @@ def get_updates(offset: int = None):
         return {"ok": False, "result": []}
 
 
+def initialize_telegram_offset():
+    """
+    Initialize by fetching all pending updates and acknowledging them.
+    This ensures we start fresh and only process NEW messages after startup.
+    """
+    global _last_update_id
+    try:
+        mcp_log("INFO", "Initializing Telegram - fetching and acknowledging pending updates...")
+        # Get all pending updates without offset (gets everything)
+        updates_response = get_updates()
+        
+        if updates_response.get("ok"):
+            updates = updates_response.get("result", [])
+            if updates:
+                # Get the highest update_id
+                max_update_id = max(update.get("update_id", 0) for update in updates)
+                _last_update_id = max_update_id
+                mcp_log("INFO", f"Acknowledged {len(updates)} pending updates. Last update_id: {_last_update_id}")
+                mcp_log("INFO", f"Agent will now only process NEW messages (update_id > {_last_update_id})")
+            else:
+                mcp_log("INFO", "No pending updates. Agent ready to receive new messages.")
+        else:
+            mcp_log("WARNING", "Failed to initialize Telegram offset")
+    except Exception as e:
+        mcp_log("ERROR", f"Error initializing Telegram offset: {e}")
+
+
 def poll_telegram_messages():
     """Poll Telegram for new messages and queue them"""
     global _last_update_id, _processed_message_ids, _processed_update_ids
@@ -57,10 +88,17 @@ def poll_telegram_messages():
         mcp_log("ERROR", "TELEGRAM_BOT_TOKEN not set in environment")
         return
     
+    # Use offset to skip old messages - only get updates after _last_update_id
     updates_response = get_updates(_last_update_id + 1)
     
     if updates_response.get("ok"):
-        for update in updates_response.get("result", []):
+        updates = updates_response.get("result", [])
+        
+        # If no new updates, return early
+        if not updates:
+            return
+        
+        for update in updates:
             update_id = update.get("update_id")
             
             # Skip if we've already processed this update
@@ -69,6 +107,7 @@ def poll_telegram_messages():
                 _last_update_id = max(_last_update_id, update_id)
                 continue
             
+            # Update last_update_id to acknowledge this update (even if we skip it)
             _last_update_id = max(_last_update_id, update_id)
             
             message = update.get("message")
@@ -109,9 +148,10 @@ def receive_telegram_message() -> TelegramMessageOutput:
     """
     Receive the latest message from Telegram bot.
     Polls Telegram API for new messages and returns the most recent one.
+    Only returns messages that arrived AFTER the agent started.
     Usage: receive_telegram_message
     """
-    global _message_queue
+    global _message_queue, _last_update_id, _initialized
     
     if not TELEGRAM_BOT_TOKEN:
         return TelegramMessageOutput(
@@ -119,6 +159,11 @@ def receive_telegram_message() -> TelegramMessageOutput:
             chat_id="",
             message_id=0
         )
+    
+    # Initialize offset on first call to skip old messages
+    if not hasattr(receive_telegram_message, '_initialized'):
+        initialize_telegram_offset()
+        receive_telegram_message._initialized = True
     
     # Poll for new messages
     poll_telegram_messages()
@@ -212,6 +257,8 @@ def poll_telegram_once() -> str:
 
 if __name__ == "__main__":
     print("mcp_server_telegram.py starting")
+    # Initialize offset on startup to skip old messages
+    initialize_telegram_offset()
     if len(sys.argv) > 1 and sys.argv[1] == "dev":
         mcp.run()  # Run without transport for dev server
     else:

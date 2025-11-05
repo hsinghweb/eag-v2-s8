@@ -31,6 +31,18 @@ async def poll_and_process():
     print("Agent before initialize")
     await multi_mcp.initialize()
     
+    # Initialize Telegram offset to skip old messages
+    print("📱 Initializing Telegram - skipping old messages...")
+    try:
+        # Call a tool to initialize offset (this will be handled by the server)
+        await multi_mcp.call_tool("receive_telegram_message", {})
+        print("✅ Telegram initialized. Agent will only process NEW messages sent after this point.")
+    except Exception as e:
+        print(f"⚠️ Telegram initialization note: {e}")
+    
+    print("\n🔄 Agent is now idle, waiting for NEW messages...")
+    print("💬 Send a NEW message to your bot to start processing\n")
+    
     while True:
         try:
             # Check for Telegram message
