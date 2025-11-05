@@ -58,7 +58,7 @@ def initialize_telegram_offset():
     Initialize by fetching all pending updates and acknowledging them.
     This ensures we start fresh and only process NEW messages after startup.
     """
-    global _last_update_id
+    global _last_update_id, _processed_update_ids
     try:
         mcp_log("INFO", "Initializing Telegram - fetching and acknowledging pending updates...")
         # Get all pending updates without offset (gets everything)
@@ -67,8 +67,14 @@ def initialize_telegram_offset():
         if updates_response.get("ok"):
             updates = updates_response.get("result", [])
             if updates:
-                # Get the highest update_id
-                max_update_id = max(update.get("update_id", 0) for update in updates)
+                # Get the highest update_id and mark all as processed
+                max_update_id = 0
+                for update in updates:
+                    update_id = update.get("update_id", 0)
+                    max_update_id = max(max_update_id, update_id)
+                    # Mark all old updates as processed so they won't be queued
+                    _processed_update_ids.add(update_id)
+                
                 _last_update_id = max_update_id
                 mcp_log("INFO", f"Acknowledged {len(updates)} pending updates. Last update_id: {_last_update_id}")
                 mcp_log("INFO", f"Agent will now only process NEW messages (update_id > {_last_update_id})")
@@ -89,6 +95,7 @@ def poll_telegram_messages():
         return
     
     # Use offset to skip old messages - only get updates after _last_update_id
+    # Use timeout=30 to wait for new messages (long polling)
     updates_response = get_updates(_last_update_id + 1)
     
     if updates_response.get("ok"):
@@ -135,11 +142,11 @@ def poll_telegram_messages():
                             "message_id": message_id,
                             "update_id": update_id
                         })
-                        mcp_log("INFO", f"Queued new message (ID: {message_id}): {text[:50]}...")
+                        mcp_log("INFO", f"✅ Queued new message (ID: {message_id}): {text[:50]}...")
                     else:
                         mcp_log("INFO", f"Message ID {message_id} already in queue, skipping")
                     
-                    # Mark update as processed
+                    # Mark update as processed AFTER queuing (so it's in queue but won't be re-queued)
                     _processed_update_ids.add(update_id)
 
 
@@ -162,10 +169,16 @@ def receive_telegram_message() -> TelegramMessageOutput:
     
     # Initialize offset on first call to skip old messages
     if not hasattr(receive_telegram_message, '_initialized'):
+        mcp_log("INFO", "First call to receive_telegram_message - initializing offset...")
         initialize_telegram_offset()
         receive_telegram_message._initialized = True
+        mcp_log("INFO", f"Offset initialized. Last update_id: {_last_update_id}")
+        # Poll immediately after initialization to catch any messages that arrived during init
+        mcp_log("INFO", "Polling for messages immediately after initialization...")
+        poll_telegram_messages()
+        mcp_log("INFO", f"After initialization poll: Queue size = {len(_message_queue)}")
     
-    # Poll for new messages
+    # Always poll for new messages (important: poll every time to catch new messages)
     poll_telegram_messages()
     
     # Return latest message from queue, or empty if none
@@ -173,6 +186,8 @@ def receive_telegram_message() -> TelegramMessageOutput:
         msg = _message_queue.pop(0)  # FIFO
         message_id = msg.get("message_id", 0)
         update_id = msg.get("update_id", 0)
+        
+        mcp_log("INFO", f"Returning queued message (ID: {message_id}, Update: {update_id})")
         
         # Mark message as processed to avoid reprocessing
         if message_id:

@@ -35,8 +35,16 @@ async def poll_and_process():
     print("📱 Initializing Telegram - skipping old messages...")
     try:
         # Call a tool to initialize offset (this will be handled by the server)
-        await multi_mcp.call_tool("receive_telegram_message", {})
+        # This first call will initialize the offset and acknowledge old messages
+        init_response = await multi_mcp.call_tool("receive_telegram_message", {})
         print("✅ Telegram initialized. Agent will only process NEW messages sent after this point.")
+        
+        # Check if there's already a message queued from initialization
+        # Parse the response to see if we got a message
+        if hasattr(init_response, 'content'):
+            raw_text = getattr(init_response.content, 'text', None) if hasattr(init_response.content, 'text') else str(init_response.content)
+            if raw_text and raw_text.strip() and not raw_text.startswith("ERROR") and '"message"' in str(raw_text):
+                print("⚠️ Note: Found a message during initialization - it will be processed in the next loop iteration")
     except Exception as e:
         print(f"⚠️ Telegram initialization note: {e}")
     
@@ -49,6 +57,7 @@ async def poll_and_process():
             from modules.action import parse_function_call
             
             # Use the Telegram tool to receive message
+            # First call might initialize offset, so we always call it to ensure polling happens
             response = await multi_mcp.call_tool("receive_telegram_message", {})
             
             # Parse response - handle TextContent objects
@@ -252,8 +261,12 @@ async def poll_and_process():
                 if message_id:
                     print(f"✅ Message (ID: {message_id}) processed and marked as complete. Will not process again.")
             
-            # Poll interval - check every 5 seconds for new messages
-            await asyncio.sleep(5)  # Check every 5 seconds
+            # Poll interval - no sleep needed since getUpdates uses long polling (timeout=30)
+            # This means Telegram will wait up to 30 seconds for new messages, so we don't need to sleep
+            # The getUpdates call itself will block until a message arrives or timeout
+            # For faster response, we can use a short sleep if no message was found
+            if not message or not message.strip():
+                await asyncio.sleep(2)  # Short sleep only if no message found
             
         except KeyboardInterrupt:
             print("\n👋 Shutting down...")
