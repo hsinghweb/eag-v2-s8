@@ -345,7 +345,7 @@ class AgentLoop:
                             else:
                                 sheet_id = arguments.get("sheet_id", "")
                         if sheet_id:
-                            workflow_guidance = f"\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\""
+                            workflow_guidance = f"\n\n✅ Data added to sheet successfully!\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\"\n\nIMPORTANT: After getting the link, you MUST send email with the link before completing the task."
                     elif "get_sheet_link" in tool_name.lower():
                         # Extract link from result
                         sheet_link = ""
@@ -366,7 +366,8 @@ class AgentLoop:
                             if self.current_perception and self.current_perception.entities:
                                 subject_suggestion = " ".join(self.current_perception.entities[:2]).title()
                             
-                            workflow_guidance = f"\n\n✅ Sheet link retrieved: {sheet_link}\n\n🔴 CRITICAL FINAL STEP: You MUST send email with the sheet link!\n\nUse: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet with the requested information\"|sheet_link=\"{sheet_link}\"\n\nIMPORTANT: This is the FINAL step. After sending email, return FINAL_ANSWER with completion message."
+                            # CRITICAL: After getting sheet link, email MUST be sent next - no other steps allowed
+                            workflow_guidance = f"\n\n✅ Sheet link retrieved: {sheet_link}\n\n🔴🔴🔴 CRITICAL FINAL STEP: You MUST send email with the sheet link NOW!\n\n🔴 DO NOT DO ANYTHING ELSE - SEND EMAIL IMMEDIATELY!\n\nUse: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet with the requested information. The Google Sheet link is included below.\"|sheet_link=\"{sheet_link}\"\n\nIMPORTANT: \n- The sheet_link parameter MUST be the exact link from get_sheet_link result: {sheet_link}\n- This is the FINAL step - send email NOW, then return FINAL_ANSWER\n- DO NOT skip this step - email sending is mandatory\n- After sending email successfully, return FINAL_ANSWER with completion message"
                         else:
                             workflow_guidance = f"\n\n⚠️ Failed to get sheet link. Try again or check sheet_id is correct."
                     elif "send_email_with_link" in tool_name.lower() or "send_email" in tool_name.lower():

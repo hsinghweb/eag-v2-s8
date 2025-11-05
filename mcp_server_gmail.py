@@ -71,7 +71,9 @@ def send_email_via_smtp(to: str, subject: str, body: str, link: str = None) -> d
             <html>
               <body>
                 <p>{body}</p>
-                <p><a href="{link}" target="_blank">Click here to open: {link}</a></p>
+                <p><strong>Google Sheet Link:</strong></p>
+                <p><a href="{link}" target="_blank" style="color: #1a73e8; text-decoration: none; font-size: 16px; font-weight: bold;">{link}</a></p>
+                <p><em>Click the link above to open the Google Sheet in your browser.</em></p>
               </body>
             </html>
             """
@@ -175,12 +177,31 @@ def send_email_with_link(to: str, subject: str, body: str, sheet_link: str) -> S
     Note: The 'to' parameter is ignored - always uses RECIPIENT_EMAIL from .env
     """
     try:
+        # Validate sheet_link is provided and is a valid Google Sheets URL
+        if not sheet_link or not sheet_link.strip():
+            error_msg = "sheet_link parameter is required and cannot be empty"
+            mcp_log("ERROR", error_msg)
+            return SendEmailOutput(
+                message_id="",
+                success=False
+            )
+        
+        if not sheet_link.startswith("https://docs.google.com/spreadsheets/d/"):
+            mcp_log("WARNING", f"sheet_link may not be a valid Google Sheets URL: {sheet_link[:50]}...")
+        
+        mcp_log("INFO", f"Sending email with Google Sheet link: {sheet_link[:80]}...")
+        
         result = send_email_via_smtp(
             to="",  # Ignored - uses RECIPIENT_EMAIL from .env
             subject=subject,
             body=body,
             link=sheet_link
         )
+        
+        if result.get("success"):
+            mcp_log("INFO", f"✅ Email sent successfully with Google Sheet link to {os.getenv('RECIPIENT_EMAIL', 'recipient')}")
+        else:
+            mcp_log("ERROR", f"❌ Failed to send email: {result.get('error', 'Unknown error')}")
         
         return SendEmailOutput(
             message_id=result.get("message_id", ""),

@@ -83,13 +83,17 @@ For ANY user query, follow this standardized workflow:
    - Headers should match the data type (e.g., Name/Value for generic data, Rank/Team/Score for rankings, Date/Price for stocks)
 4. Get Link: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
 5. Send Email: FUNCTION_CALL: send_email_with_link|to=<email from .env>|subject="<relevant subject>"|body="<relevant body>"|sheet_link=<from step 4>
-   - 🔴 THIS IS A MANDATORY STEP - DO NOT SKIP!
+   - 🔴🔴🔴 THIS IS A MANDATORY FINAL STEP - DO NOT SKIP!
+   - 🔴 After getting the sheet link (step 4), you MUST send email IMMEDIATELY - no other steps allowed!
    - Subject should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Data Results")
-   - Body should mention what data is in the sheet (e.g., "Here is the data sheet with the requested information")
+   - Body should mention what data is in the sheet (e.g., "Here is the data sheet with the requested information. The Google Sheet link is included below.")
    - Use the email address from .env file (GMAIL_USER_EMAIL) or leave empty to auto-detect
-   - Use the EXACT sheet_link from step 4 (get_sheet_link result)
+   - Use the EXACT sheet_link from step 4 (get_sheet_link result) - MUST be the full URL starting with https://docs.google.com/spreadsheets/d/
+   - The sheet_link will be automatically included as a clickable link in the email
+   - 🔴 CRITICAL: Email MUST be sent after creating the Google Sheet and adding data - this is the final action before completion!
 6. Finally: FINAL_ANSWER: [Task completed. Sheet created at <link> and emailed to <email>]
    - ONLY return FINAL_ANSWER after ALL 5 steps are complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link, send_email_with_link)
+   - 🔴 Email sending (step 5) is MANDATORY - do not return FINAL_ANSWER until email is sent!
 
 IMPORTANT: 
 - 🔴 ALL 5 STEPS ARE MANDATORY: Search → Create Sheet → Add Data → Get Link → Send Email
