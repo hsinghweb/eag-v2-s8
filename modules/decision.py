@@ -33,10 +33,22 @@ async def generate_plan(
 
     # Check what tools have been used
     used_tools = []
+    completed_steps = []
     for m in memory_items:
         if hasattr(m, 'tool_name') and m.tool_name:
             used_tools.append(m.tool_name)
+            # Check for completed steps
+            if "search" in m.tool_name.lower() or "search_documents" in m.tool_name.lower():
+                completed_steps.append("search")
+            elif "create_google_sheet" in m.tool_name.lower():
+                completed_steps.append("create_sheet")
+            elif "add_data_to_sheet" in m.tool_name.lower():
+                completed_steps.append("add_data")
+            elif "get_sheet_link" in m.tool_name.lower():
+                completed_steps.append("get_link")
+    
     used_tools_text = ", ".join(set(used_tools)) if used_tools else "None yet"
+    completed_steps_text = ", ".join(set(completed_steps)) if completed_steps else "None"
     
     # Determine if we're near the end
     remaining_steps = max_steps - step_num + 1
@@ -55,6 +67,7 @@ Respond in **exactly one line** using one of the following formats:
 - Step: {step_num} of {max_steps} ({remaining_steps} steps remaining)
 - {'⚠️ LAST FEW STEPS - Must complete task soon!' if is_last_step else ''}
 - Tools already used: {used_tools_text}
+- ✅ Completed steps (DO NOT retry these): {completed_steps_text}
 - Memory from previous steps: 
 {memory_texts}
 {tool_context}

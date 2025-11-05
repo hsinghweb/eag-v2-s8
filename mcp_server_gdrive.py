@@ -259,6 +259,20 @@ async def add_data_to_sheet(args: Dict[str, Any]) -> Dict[str, str]:
         
         if not sheet_id:
             raise ValueError("sheet_id is required")
+        
+        # Validate sheet_id format (Google Sheet IDs are alphanumeric, typically 44 characters)
+        if not isinstance(sheet_id, str):
+            sheet_id = str(sheet_id)
+        
+        # Google Sheet IDs are typically long alphanumeric strings
+        # If it's just a number (like 611513920), it's likely wrong
+        if sheet_id.isdigit() and len(sheet_id) < 20:
+            raise ValueError(f"Invalid sheet_id format: '{sheet_id}' appears to be a number, not a valid Google Sheet ID. Sheet IDs are typically long alphanumeric strings (44+ characters).")
+        
+        # Basic validation - should contain alphanumeric characters
+        if not any(c.isalnum() for c in sheet_id):
+            raise ValueError(f"Invalid sheet_id format: '{sheet_id}' does not appear to be a valid Google Sheet ID.")
+        
         if not data:
             raise ValueError("data is required")
         
