@@ -82,28 +82,16 @@ For ANY user query, follow this standardized workflow:
    - Example formats: [["Name","Value"],["Item1","100"],["Item2","200"],...] OR [["Rank","Team","Score"],["1","TeamA","95"],["2","TeamB","87"],...]
    - Headers should match the data type (e.g., Name/Value for generic data, Rank/Team/Score for rankings, Date/Price for stocks)
 4. Get Link: FUNCTION_CALL: get_sheet_link|input.sheet_id=<same sheet_id from step 2>
-5. Send Email: FUNCTION_CALL: send_email_with_link|to=<email from .env>|subject="<relevant subject>"|body="<relevant body>"|sheet_link=<from step 4>
-   - 🔴🔴🔴 THIS IS A MANDATORY FINAL STEP - DO NOT SKIP!
-   - 🔴 After getting the sheet link (step 4), you MUST send email IMMEDIATELY - no other steps allowed!
-   - Subject should reflect the query topic (e.g., "Current Standings", "Latest Scores", "Data Results")
-   - Body should mention what data is in the sheet (e.g., "Here is the data sheet with the requested information. The Google Sheet link is included below.")
-   - Use the email address from .env file (GMAIL_USER_EMAIL) or leave empty to auto-detect
-   - Use the EXACT sheet_link from step 4 (get_sheet_link result) - MUST be the full URL starting with https://docs.google.com/spreadsheets/d/
-   - The sheet_link will be automatically included as a clickable link in the email
-   - 🔴 CRITICAL: Email MUST be sent after creating the Google Sheet and adding data - this is the final action before completion!
-6. Finally: FINAL_ANSWER: [Task completed. Sheet created at <link> and emailed to <email>]
-   - ONLY return FINAL_ANSWER after ALL 5 steps are complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link, send_email_with_link)
-   - 🔴 Email sending (step 5) is MANDATORY - do not return FINAL_ANSWER until email is sent!
+5. Finally: FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: <link>]
+   - ONLY return FINAL_ANSWER after ALL 4 steps are complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link)
+   - The sheet link will automatically be sent to the user via Telegram - no email step needed!
 
 IMPORTANT: 
-- 🔴 ALL 5 STEPS ARE MANDATORY: Search → Create Sheet → Add Data → Get Link → Send Email
+- 🔴 ALL 4 STEPS ARE MANDATORY: Search → Create Sheet → Add Data → Get Link → FINAL_ANSWER
 - For step 3: Extract ONLY the top {perception.scope_limit or 10} results if scope_limit is set. Limit data rows accordingly.
-- For step 4: You MUST get the sheet link before sending email
-- For step 5: You MUST send email with the sheet link - this is the final step before FINAL_ANSWER
-- For step 5: Use GMAIL_USER_EMAIL from .env file (or leave empty to auto-detect)
+- For step 4: After getting the sheet link, you can immediately return FINAL_ANSWER
 - ALWAYS use the sheet_id from the create_google_sheet result when calling add_data_to_sheet and get_sheet_link
-- ALWAYS use the sheet_link from get_sheet_link result when calling send_email_with_link
-- Do NOT return FINAL_ANSWER until ALL 5 steps are complete (especially send_email_with_link)
+- The sheet link will be automatically included in the Telegram response - no need to send email
 - This workflow applies to ANY query type - extract data patterns, create relevant headers, and format accordingly
 
 ---
@@ -116,14 +104,8 @@ IMPORTANT:
 - 📊 Use `create_google_sheet` to create spreadsheet
 - 📝 Use `add_data_to_sheet` to add data (format as 2D array: [["Header1","Header2"],["Row1Col1","Row1Col2"]])
 - 🔗 Use `get_sheet_link` to get shareable URL
-- 📧 Use `send_email_with_link` to send email with sheet link
-- 🔴 YOU CANNOT RETURN FINAL_ANSWER UNTIL send_email_with_link HAS BEEN CALLED!
-- ✅ Once ALL 5 steps complete (including send_email_with_link), return FINAL_ANSWER with summary
-
-🔴 EMAIL ENFORCEMENT:
-- If you have called get_sheet_link, you MUST call send_email_with_link next
-- Do NOT return FINAL_ANSWER if you haven't called send_email_with_link
-- Check your memory/used_tools to verify send_email_with_link was called before FINAL_ANSWER
+- ✅ Once ALL 4 steps complete (search, create_google_sheet, add_data_to_sheet, get_sheet_link), return FINAL_ANSWER with summary
+- 📱 The sheet link will automatically be sent to the user via Telegram - no email step needed
 - {'⏰ STEP {step_num} OF {max_steps} - You must return FINAL_ANSWER if task cannot be completed or is done!' if is_last_step else ''}
 - ❌ NEVER output explanation text — only FUNCTION_CALL or FINAL_ANSWER
 - 💡 If stuck or uncertain, return: FINAL_ANSWER: [Progress: <what was done>. Issue: <what's blocking>. Attempted: {used_tools_text if used_tools_text != 'None yet' else 'No tools yet'}]
@@ -132,7 +114,7 @@ IMPORTANT:
 
 
     try:
-        raw = (await model.generate_text(prompt)).strip()
+        raw = (await model.generate_text(prompt, max_retries=3)).strip()
         log("plan", f"LLM output: {raw}")
 
         for line in raw.splitlines():

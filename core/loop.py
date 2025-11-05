@@ -16,6 +16,7 @@ class AgentLoop:
         self.mcp = dispatcher
         self.current_perception = None  # Store current perception for scope limits
         self.tools = dispatcher.get_all_tools()
+        self._pending_sheet_link = None  # Store sheet_link after get_sheet_link for forced email
 
     def tool_expects_input(self, tool_name: str) -> bool:
         tool = next((t for t in self.tools if getattr(t, "name", None) == tool_name), None)
@@ -138,6 +139,8 @@ class AgentLoop:
                 # PHASE 3: DECISION - Create execution plan
                 # ============================================
                 print(f"[phase] DECISION: Creating execution plan...")
+                
+                # Generate plan normally (no email step needed)
                 plan = await decide_next_action(
                     context=self.context,
                     perception=perception,
@@ -148,48 +151,15 @@ class AgentLoop:
 
                 # Check if plan is FINAL_ANSWER (task completed)
                 if "FINAL_ANSWER:" in plan:
-                    # Verify that email was sent before allowing FINAL_ANSWER
-                    used_tools_for_check = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
-                    email_sent = any("send_email" in tool.lower() for tool in used_tools_for_check)
-                    
-                    if not email_sent:
-                        print(f"[phase] ⚠️ WARNING: Agent tried to return FINAL_ANSWER without sending email!")
-                        print(f"[phase] 🔴 FORCING: Agent must send email before completion")
-                        # Override the plan to force email sending
-                        # Get sheet_link from memory
-                        sheet_link = ""
-                        for mem in self.context.memory_trace:
-                            if hasattr(mem, 'tool_name') and mem.tool_name and "get_sheet_link" in mem.tool_name.lower():
-                                if hasattr(mem, 'text') and mem.text:
-                                    import re
-                                    link_match = re.search(r'https://docs\.google\.com[^\s"]+', str(mem.text))
-                                    if link_match:
-                                        sheet_link = link_match.group(0)
-                                        break
-                        
-                        if sheet_link:
-                            # Force email step - override plan
-                            plan = f'FUNCTION_CALL: send_email_with_link|to=""|subject="Data Results"|body="Here is the data sheet with the requested information"|sheet_link="{sheet_link}"'
-                            print(f"[phase] 🔄 FORCED: Overriding FINAL_ANSWER to send email first: {plan}")
-                            # Continue to execution phase with forced email plan
-                        else:
-                            print(f"[phase] ⚠️ No sheet link found in memory. Cannot force email.")
-                            final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
-                            if final_lines:
-                                self.context.final_answer = final_lines[-1].strip()
-                                print(f"[phase] ✅ COMPLETION: Task completed (no email sent - no sheet link found)")
-                                break
+                    final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
+                    if final_lines:
+                        self.context.final_answer = final_lines[-1].strip()
+                        print(f"[phase] ✅ COMPLETION: Task completed successfully")
+                        break
                     else:
-                        # Email was sent, allow FINAL_ANSWER
-                        final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
-                        if final_lines:
-                            self.context.final_answer = final_lines[-1].strip()
-                            print(f"[phase] ✅ COMPLETION: Task completed successfully (email sent)")
-                            break
-                        else:
-                            self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
-                            print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
-                            break
+                        self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
+                        print(f"[phase] ✅ COMPLETION: Task completed (answer extracted)")
+                        break
                 
                 # Force completion if we're at the last step
                 if step >= max_steps - 1:
@@ -345,49 +315,20 @@ class AgentLoop:
                             else:
                                 sheet_id = arguments.get("sheet_id", "")
                         if sheet_id:
-                            workflow_guidance = f"\n\n✅ Data added to sheet successfully!\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\"\n\nIMPORTANT: After getting the link, you MUST send email with the link before completing the task."
+                            workflow_guidance = f"\n\n✅ Data added to sheet successfully!\n\nNEXT: Get the sheet link using: get_sheet_link|input.sheet_id=\"{sheet_id}\"\n\nIMPORTANT: After getting the link, you can return FINAL_ANSWER. The link will be sent to the user via Telegram."
                     elif "get_sheet_link" in tool_name.lower():
                         # Extract link from result
                         sheet_link = ""
                         if isinstance(result_obj, dict):
                             sheet_link = result_obj.get("link") or result_obj.get("sheet_url", "") or result_obj.get("sheetUrl", "")
                         if sheet_link:
-                            # Get email from .env or use placeholder
-                            import os
-                            from dotenv import load_dotenv
-                            load_dotenv()
-                            email_from_env = os.getenv("GMAIL_USER_EMAIL", "").strip()
-                            if email_from_env:
-                                email_to_use = email_from_env
-                            else:
-                                email_to_use = ""  # Empty will auto-detect from .env in mcp_server_gmail
+                            # Store sheet_link for Telegram response
+                            self._pending_sheet_link = sheet_link
                             
-                            subject_suggestion = "Data Results"
-                            if self.current_perception and self.current_perception.entities:
-                                subject_suggestion = " ".join(self.current_perception.entities[:2]).title()
-                            
-                            # CRITICAL: After getting sheet link, email MUST be sent next - no other steps allowed
-                            workflow_guidance = f"\n\n✅ Sheet link retrieved: {sheet_link}\n\n🔴🔴🔴 CRITICAL FINAL STEP: You MUST send email with the sheet link NOW!\n\n🔴 DO NOT DO ANYTHING ELSE - SEND EMAIL IMMEDIATELY!\n\nUse: send_email_with_link|to=\"{email_to_use}\"|subject=\"{subject_suggestion}\"|body=\"Here is the data sheet with the requested information. The Google Sheet link is included below.\"|sheet_link=\"{sheet_link}\"\n\nIMPORTANT: \n- The sheet_link parameter MUST be the exact link from get_sheet_link result: {sheet_link}\n- This is the FINAL step - send email NOW, then return FINAL_ANSWER\n- DO NOT skip this step - email sending is mandatory\n- After sending email successfully, return FINAL_ANSWER with completion message"
+                            # After getting sheet link, task is complete - return FINAL_ANSWER
+                            workflow_guidance = f"\n\n✅ Sheet link retrieved successfully: {sheet_link}\n\n🎉 Task is complete! Return FINAL_ANSWER with a summary.\n\nReturn FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: {sheet_link}]\n\nThe sheet link will be sent to the user via Telegram."
                         else:
                             workflow_guidance = f"\n\n⚠️ Failed to get sheet link. Try again or check sheet_id is correct."
-                    elif "send_email_with_link" in tool_name.lower() or "send_email" in tool_name.lower():
-                        # Email sent successfully - task is complete!
-                        # Try to get sheet_link from memory or result
-                        email_sheet_link = ""
-                        if isinstance(result_obj, dict):
-                            email_sheet_link = result_obj.get("link", "") or result_obj.get("sheet_link", "")
-                        if not email_sheet_link:
-                            # Try to find from memory
-                            for mem in self.context.memory_trace:
-                                if hasattr(mem, 'tool_name') and mem.tool_name and "get_sheet_link" in mem.tool_name.lower():
-                                    if hasattr(mem, 'text') and 'link' in mem.text:
-                                        import re
-                                        link_match = re.search(r'https://docs\.google\.com[^\s"]+', mem.text)
-                                        if link_match:
-                                            email_sheet_link = link_match.group(0)
-                                            break
-                        
-                        workflow_guidance = f"\n\n✅ Email sent successfully! Task is complete.\n\nReturn FINAL_ANSWER: [Task completed. Sheet created and emailed successfully. Sheet link: {email_sheet_link if email_sheet_link else 'see email'}]"
                     
                     # Get search results for data extraction context
                     search_context = ""
@@ -425,25 +366,24 @@ class AgentLoop:
     - Do NOT skip this step - adding data is required!
     
     🔴 MANDATORY WORKFLOW (MUST COMPLETE ALL STEPS):
-    1. Search → 2. Create Sheet → 3. Add Data → 4. Get Link → 5. Send Email → 6. FINAL_ANSWER
+    1. Search → 2. Create Sheet → 3. Add Data → 4. Get Link → 5. FINAL_ANSWER
     
     Check which steps you've completed:
     - Tools used so far: {', '.join(set(used_tools))}
-    
-    🔴 CRITICAL: You CANNOT return FINAL_ANSWER until you have called send_email_with_link!
     
     Required steps checklist:
     - [ ] search or search_documents (completed if 'search' in tools used)
     - [ ] create_google_sheet (completed if 'create_google_sheet' in tools used)
     - [ ] add_data_to_sheet (completed if 'add_data_to_sheet' in tools used)
     - [ ] get_sheet_link (completed if 'get_sheet_link' in tools used)
-    - [ ] send_email_with_link (MUST BE COMPLETED BEFORE FINAL_ANSWER!)
     
-    If you just got the sheet link (get_sheet_link), you MUST call send_email_with_link next!
-    Do NOT return FINAL_ANSWER until send_email_with_link has been called successfully!
+    🔴 IF YOU JUST CALLED get_sheet_link:
+    - Task is complete! Return FINAL_ANSWER with a summary
+    - The sheet link will automatically be sent to the user via Telegram
+    - Format: FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Sheet link: <link>]
     
-    If you have completed ALL 5 steps (including send_email_with_link), return:
-    FINAL_ANSWER: [Task completed successfully. Sheet created and emailed to user. Summary: <what was done>]
+    If you have completed ALL 4 steps (search, create_google_sheet, add_data_to_sheet, get_sheet_link), return:
+    FINAL_ANSWER: [Task completed successfully. Google Sheet created with the requested data. Summary: <what was done>]
 
     Otherwise, return the next FUNCTION_CALL to continue the workflow."""
                 except Exception as e:

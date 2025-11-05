@@ -120,16 +120,114 @@ async def poll_and_process():
                     answer_text = final_response.replace("FINAL_ANSWER:", "").strip()
                     print("\n💡 Final Answer:\n", answer_text)
                     
+                    # Extract sheet link from agent's memory to include in Telegram response
+                    sheet_link = None
+                    try:
+                        import re
+                        import json
+                        
+                        # Priority 1: Try to get from agent's pending sheet link (most reliable)
+                        if hasattr(agent, '_pending_sheet_link') and agent._pending_sheet_link:
+                            sheet_link = agent._pending_sheet_link
+                            print(f"✅ Found sheet link from _pending_sheet_link: {sheet_link[:80]}...")
+                        
+                        # Priority 2: Search in memory trace for get_sheet_link results (check STRUCTURED_DATA)
+                        if not sheet_link:
+                            for mem in agent.context.memory_trace:
+                                if hasattr(mem, 'tool_name') and mem.tool_name and "get_sheet_link" in mem.tool_name.lower():
+                                    if hasattr(mem, 'text') and mem.text:
+                                        # Try to parse STRUCTURED_DATA JSON first
+                                        if 'STRUCTURED_DATA' in str(mem.text):
+                                            try:
+                                                # Extract JSON from STRUCTURED_DATA
+                                                json_match = re.search(r'\[STRUCTURED_DATA\]:\s*(\{.*?\})', str(mem.text), re.DOTALL)
+                                                if json_match:
+                                                    data = json.loads(json_match.group(1))
+                                                    if isinstance(data, dict):
+                                                        sheet_link = data.get("link") or data.get("sheet_url") or data.get("sheetUrl")
+                                                        if sheet_link:
+                                                            print(f"✅ Found sheet link from STRUCTURED_DATA: {sheet_link[:80]}...")
+                                                            break
+                                            except json.JSONDecodeError:
+                                                pass
+                                        
+                                        # Fallback: regex extraction from text
+                                        if not sheet_link:
+                                            # Match full URL including query parameters (e.g., ?gid=0#gid=0)
+                                            # Pattern matches: https://docs.google.com/spreadsheets/d/SHEET_ID/edit?gid=0#gid=0
+                                            link_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9_-]+(/edit)?(\?[^\s"<>)]*)?(#[^\s"<>)]*)?', str(mem.text))
+                                            if link_match:
+                                                sheet_link = link_match.group(0)
+                                                print(f"✅ Found sheet link from memory text: {sheet_link[:80]}...")
+                                                break
+                        
+                        # Priority 3: Try to extract from create_google_sheet result (sheet_url)
+                        if not sheet_link:
+                            for mem in agent.context.memory_trace:
+                                if hasattr(mem, 'tool_name') and mem.tool_name and "create_google_sheet" in mem.tool_name.lower():
+                                    if hasattr(mem, 'text') and mem.text:
+                                        if 'STRUCTURED_DATA' in str(mem.text):
+                                            try:
+                                                json_match = re.search(r'\[STRUCTURED_DATA\]:\s*(\{.*?\})', str(mem.text), re.DOTALL)
+                                                if json_match:
+                                                    data = json.loads(json_match.group(1))
+                                                    if isinstance(data, dict):
+                                                        sheet_link = data.get("sheet_url") or data.get("sheetUrl")
+                                                        if sheet_link:
+                                                            print(f"✅ Found sheet link from create_google_sheet: {sheet_link[:80]}...")
+                                                            break
+                                            except json.JSONDecodeError:
+                                                pass
+                        
+                        # Priority 4: Extract from final answer text
+                        if not sheet_link:
+                            # Match full URL including query parameters (e.g., ?gid=0#gid=0)
+                            link_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9_-]+(/edit)?(\?[^\s"<>)]*)?(#[^\s"<>)]*)?', answer_text)
+                            if link_match:
+                                sheet_link = link_match.group(0)
+                                print(f"✅ Found sheet link from final answer: {sheet_link[:80]}...")
+                        
+                        if not sheet_link:
+                            print("⚠️ Could not extract sheet link from any source")
+                    except Exception as e:
+                        log("error", f"Failed to extract sheet link: {e}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # Build enhanced Telegram message with sheet link
+                    if sheet_link:
+                        # Clean up the link (remove any trailing characters that might break it)
+                        sheet_link = sheet_link.strip().rstrip('.,;:!?')
+                        
+                        # Create a nicely formatted response
+                        telegram_message = f"""✅ Task Completed Successfully!
+
+📊 Your data has been organized in a Google Sheet.
+
+🔗 Open the Sheet:
+{sheet_link}
+
+💡 You can view, edit, and share this sheet directly from the link above."""
+                    else:
+                        # Fallback if link not found
+                        telegram_message = f"""✅ Task Completed!
+
+{answer_text}
+
+⚠️ Note: Google Sheet was created but the link could not be retrieved automatically."""
+                    
                     # Send ONLY final response back to Telegram when task completes
                     if chat_id:
                         try:
                             await multi_mcp.call_tool("send_telegram_message", {
                                 "input": {
                                     "chat_id": chat_id,
-                                    "text": f"✅ Task Completed!\n\n{answer_text}"
+                                    "text": telegram_message
                                 }
                             })
                             print(f"✅ Sent completion message to Telegram (chat_id: {chat_id})")
+                            if sheet_link:
+                                print(f"✅ Included Google Sheet link in Telegram response")
                         except Exception as e:
                             log("error", f"Failed to send Telegram response: {e}")
                 
