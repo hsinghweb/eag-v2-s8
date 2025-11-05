@@ -1,12 +1,14 @@
 # core/loop.py
 
 import asyncio
+import time
 from core.context import AgentContext
 from core.session import MultiMCP
 from core.strategy import decide_next_action
 from modules.perception import extract_perception, PerceptionResult
 from modules.action import ToolCallResult, parse_function_call
 from modules.memory import MemoryItem
+from modules.logger import AgentLogger, set_logger, get_logger
 import json
 
 
@@ -16,7 +18,17 @@ class AgentLoop:
         self.mcp = dispatcher
         self.current_perception = None  # Store current perception for scope limits
         self.tools = dispatcher.get_all_tools()
-        self._pending_sheet_link = None  # Store sheet_link after get_sheet_link for forced email
+        self._pending_sheet_link = None  # Store sheet_link after get_sheet_link
+        self._logger = AgentLogger(self.context.session_id)
+        set_logger(self._logger)
+        
+        # Workflow step tracking
+        self.workflow_steps = {
+            'search_completed': False,
+            'sheet_created': False,
+            'data_added': False,
+            'link_retrieved': False
+        }
 
     def tool_expects_input(self, tool_name: str) -> bool:
         tool = next((t for t in self.tools if getattr(t, "name", None) == tool_name), None)
@@ -24,8 +36,75 @@ class AgentLoop:
             return False
         parameters = getattr(tool, "parameters", {})
         return list(parameters.keys()) == ["input"]
-
     
+    def verify_search_completed(self) -> tuple[bool, str]:
+        """Verify that search step is completed"""
+        for mem in self.context.memory_trace:
+            if hasattr(mem, 'tool_name') and mem.tool_name:
+                if "search" in mem.tool_name.lower():
+                    if hasattr(mem, 'text') and mem.text and len(str(mem.text)) > 10:
+                        self.workflow_steps['search_completed'] = True
+                        return True, "Search completed with results"
+        return False, "Search not completed - no search results found"
+    
+    def verify_sheet_created(self) -> tuple[bool, str]:
+        """Verify that sheet creation is completed"""
+        for mem in self.context.memory_trace:
+            if hasattr(mem, 'tool_name') and mem.tool_name:
+                if "create_google_sheet" in mem.tool_name.lower():
+                    if hasattr(mem, 'text') and mem.text:
+                        import json
+                        import re
+                        # Try to extract sheet_id
+                        text = str(mem.text)
+                        json_match = re.search(r'\{"sheet_id":\s*"[^"]+",', text)
+                        if json_match or "sheet_id" in text.lower():
+                            self.workflow_steps['sheet_created'] = True
+                            return True, "Sheet created successfully"
+        return False, "Sheet creation not verified - no sheet_id found"
+    
+    def verify_data_added(self) -> tuple[bool, str]:
+        """Verify that data was added to sheet"""
+        for mem in self.context.memory_trace:
+            if hasattr(mem, 'tool_name') and mem.tool_name:
+                if "add_data_to_sheet" in mem.tool_name.lower():
+                    if hasattr(mem, 'text') and mem.text:
+                        text = str(mem.text)
+                        # Check for success indicators
+                        if "success" in text.lower() or "updated_cells" in text.lower():
+                            self.workflow_steps['data_added'] = True
+                            return True, "Data added successfully"
+        return False, "Data addition not verified - no success confirmation"
+    
+    def verify_link_retrieved(self) -> tuple[bool, str]:
+        """Verify that sheet link was retrieved"""
+        if self._pending_sheet_link:
+            self.workflow_steps['link_retrieved'] = True
+            return True, f"Link retrieved: {self._pending_sheet_link}"
+        
+        # Check memory for link
+        for mem in self.context.memory_trace:
+            if hasattr(mem, 'tool_name') and mem.tool_name:
+                if "get_sheet_link" in mem.tool_name.lower():
+                    if hasattr(mem, 'text') and mem.text:
+                        import re
+                        link_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[^\s"<>\'\)]+', str(mem.text))
+                        if link_match:
+                            self.workflow_steps['link_retrieved'] = True
+                            return True, f"Link retrieved: {link_match.group(0)}"
+        return False, "Link retrieval not verified - no sheet link found"
+    
+    def get_next_required_step(self) -> tuple[str, str]:
+        """Get the next required step in the workflow"""
+        if not self.workflow_steps['search_completed']:
+            return "search", "Search for information first"
+        if not self.workflow_steps['sheet_created']:
+            return "create_sheet", "Create Google Sheet"
+        if not self.workflow_steps['data_added']:
+            return "add_data", "Add data to sheet"
+        if not self.workflow_steps['link_retrieved']:
+            return "get_link", "Get sheet link"
+        return "final_answer", "All steps completed - return FINAL_ANSWER"
 
     async def run(self) -> str:
         print(f"[agent] Starting session: {self.context.session_id}")
@@ -60,7 +139,11 @@ class AgentLoop:
                 # PHASE 1: PERCEPTION - Understand the question
                 # ============================================
                 print(f"[phase] PERCEPTION: Understanding user intent...")
+                self._logger.log_workflow_step(step + 1, "perception", "started")
+                start_time = time.time()
                 perception_raw = await extract_perception(query)
+                duration_ms = (time.time() - start_time) * 1000
+                self._logger.log_workflow_step(step + 1, "perception", "completed", f"Duration: {duration_ms:.2f}ms")
 
 
                 # ✅ Exit cleanly on FINAL_ANSWER
@@ -127,6 +210,7 @@ class AgentLoop:
                 # PHASE 2: MEMORY - Retrieve relevant context
                 # ============================================
                 print(f"[phase] MEMORY: Retrieving relevant context...")
+                self._logger.log_workflow_step(step + 1, "memory", "started")
                 retrieved = self.context.memory.retrieve(
                     query=query,
                     top_k=self.context.agent_profile.memory_config["top_k"],
@@ -134,27 +218,66 @@ class AgentLoop:
                     session_filter=self.context.session_id
                 )
                 print(f"[memory] ✅ Retrieved {len(retrieved)} memories")
+                self._logger.log_workflow_step(step + 1, "memory", "completed", f"Retrieved {len(retrieved)} memories")
 
                 # ============================================
                 # PHASE 3: DECISION - Create execution plan
                 # ============================================
                 print(f"[phase] DECISION: Creating execution plan...")
+                self._logger.log_workflow_step(step + 1, "decision", "started")
+                
+                # Verify workflow steps before planning
+                next_step, next_step_desc = self.get_next_required_step()
+                if next_step != "final_answer":
+                    print(f"[workflow] ⚠️ Next required step: {next_step} - {next_step_desc}")
+                    self._logger.log_verification("workflow_step", False, f"Next required: {next_step}")
+                else:
+                    print(f"[workflow] ✅ All workflow steps completed")
+                    self._logger.log_verification("workflow_step", True, "All steps completed")
                 
                 # Generate plan normally (no email step needed)
+                start_time = time.time()
                 plan = await decide_next_action(
                     context=self.context,
                     perception=perception,
                     memory_items=retrieved,
                     all_tools=self.tools
                 )
+                duration_ms = (time.time() - start_time) * 1000
                 print(f"[plan] ✅ {plan}")
+                self._logger.log_workflow_step(step + 1, "decision", "completed", f"Plan: {plan[:100]}... Duration: {duration_ms:.2f}ms")
 
                 # Check if plan is FINAL_ANSWER (task completed)
                 if "FINAL_ANSWER:" in plan:
+                    # Verify all workflow steps are completed before finalizing
+                    all_verified = all([
+                        self.workflow_steps['search_completed'],
+                        self.workflow_steps['sheet_created'],
+                        self.workflow_steps['data_added'],
+                        self.workflow_steps['link_retrieved']
+                    ])
+                    
+                    if not all_verified:
+                        missing_steps = [step for step, completed in self.workflow_steps.items() if not completed]
+                        print(f"[workflow] ⚠️ Cannot finalize - missing steps: {missing_steps}")
+                        self._logger.log_verification("final_answer", False, f"Missing steps: {missing_steps}")
+                        # Continue to next iteration to complete missing steps
+                        query = f"""Original user task: {self.context.user_input}
+                        
+You tried to return FINAL_ANSWER but the following workflow steps are not completed:
+{', '.join(missing_steps)}
+
+MANDATORY WORKFLOW (must complete ALL steps):
+1. Search → 2. Create Sheet → 3. Add Data → 4. Get Link → 5. FINAL_ANSWER
+
+Complete the missing steps before returning FINAL_ANSWER."""
+                        continue
+                    
                     final_lines = [line for line in plan.splitlines() if line.strip().startswith("FINAL_ANSWER:")]
                     if final_lines:
                         self.context.final_answer = final_lines[-1].strip()
-                        print(f"[phase] ✅ COMPLETION: Task completed successfully")
+                        print(f"[phase] ✅ COMPLETION: Task completed successfully - all steps verified")
+                        self._logger.log_verification("final_answer", True, "All workflow steps completed")
                         break
                     else:
                         self.context.final_answer = "FINAL_ANSWER: [result found, but could not extract]"
@@ -215,13 +338,40 @@ class AgentLoop:
                         last_tool_call = current_call
                     
                     print(f"[execution] Attempt {retry_count + 1}/{max_retries_per_step}: {tool_name}")
+                    self._logger.log_workflow_step(step + 1, "execution", "started", f"Tool: {tool_name}")
 
                     if self.tool_expects_input(tool_name):
                         tool_input = {'input': arguments} if not (isinstance(arguments, dict) and 'input' in arguments) else arguments
                     else:
                         tool_input = arguments
 
-                    response = await self.mcp.call_tool(tool_name, tool_input)
+                    # Log tool call
+                    start_time = time.time()
+                    
+                    # Identify DuckDuckGoSearcher tool calls
+                    tool_display_name = tool_name
+                    if tool_name == "search" and "query" in str(tool_input).lower():
+                        tool_display_name = "DuckDuckGoSearcher (web_search)"
+                        print(f"[tool] 🔍 Calling DuckDuckGoSearcher for web search: {tool_input}")
+                    
+                    try:
+                        response = await self.mcp.call_tool(tool_name, tool_input)
+                        duration_ms = (time.time() - start_time) * 1000
+                        self._logger.log_tool_call(tool_display_name, tool_input, "success", duration_ms)
+                        
+                        # Special logging for DuckDuckGoSearcher
+                        if tool_name == "search":
+                            print(f"[DuckDuckGoSearcher] ✅ Web search completed via tool call (duration: {duration_ms:.2f}ms)")
+                    except Exception as tool_error:
+                        duration_ms = (time.time() - start_time) * 1000
+                        error_msg = str(tool_error)
+                        self._logger.log_tool_call(tool_display_name, tool_input, None, duration_ms, error_msg)
+                        self._logger.log_error("tool_execution_error", error_msg)
+                        
+                        # Special logging for DuckDuckGoSearcher errors
+                        if tool_name == "search":
+                            print(f"[DuckDuckGoSearcher] ❌ Web search failed: {error_msg}")
+                        raise
 
                     # ✅ Safe TextContent parsing
                     raw = getattr(response.content, 'text', None)
@@ -249,10 +399,45 @@ class AgentLoop:
                         display_result = result_str
                     print(f"[action] ✅ {tool_name} → {display_result}")
 
+                    # Verify workflow step completion
+                    if "search" in tool_name.lower() or "search_documents" in tool_name.lower():
+                        verified, details = self.verify_search_completed()
+                        self._logger.log_verification("search", verified, details)
+                        if verified:
+                            print(f"[workflow] ✅ Search step verified: {details}")
+                    
+                    elif "create_google_sheet" in tool_name.lower():
+                        verified, details = self.verify_sheet_created()
+                        self._logger.log_verification("create_sheet", verified, details)
+                        if verified:
+                            print(f"[workflow] ✅ Sheet creation verified: {details}")
+                        else:
+                            print(f"[workflow] ⚠️ Sheet creation not verified: {details}")
+                    
+                    elif "add_data_to_sheet" in tool_name.lower():
+                        verified, details = self.verify_data_added()
+                        self._logger.log_verification("add_data", verified, details)
+                        if verified:
+                            print(f"[workflow] ✅ Data addition verified: {details}")
+                        else:
+                            print(f"[workflow] ⚠️ Data addition not verified: {details}")
+                    
+                    elif "get_sheet_link" in tool_name.lower():
+                        verified, details = self.verify_link_retrieved()
+                        self._logger.log_verification("get_link", verified, details)
+                        if verified:
+                            print(f"[workflow] ✅ Link retrieval verified: {details}")
+                        else:
+                            print(f"[workflow] ⚠️ Link retrieval not verified: {details}")
+
                     # Mark this step as completed
                     step_key = f"step_{step}"
                     completed_steps.add(step_key)
                     step_retry_count[step_key] = 0  # Reset retry count on success
+                    
+                    # Log step completion
+                    next_step, next_step_desc = self.get_next_required_step()
+                    self._logger.log_step_completion(tool_name, True, next_step)
                     
                     # 🧠 Add memory - store full result for retrieval
                     memory_text = f"{tool_name}({arguments}) → {result_str}"
@@ -432,6 +617,7 @@ Previous step failed after {max_retries_per_step} attempts. Continue to next ste
         except Exception as e:
             print(f"[agent] ❌ Session failed: {e}")
             import traceback
+            self._logger.log_error("session_failed", str(e), traceback.format_exc())
             traceback.print_exc()
             self.context.final_answer = "FINAL_ANSWER: [Agent session failed due to error]"
         
@@ -440,13 +626,24 @@ Previous step failed after {max_retries_per_step} attempts. Continue to next ste
         # ============================================
         print(f"\n{'='*60}")
         print(f"[phase] COMPLETION: Finalizing session...")
+        self._logger.log_workflow_step(999, "completion", "started")
         
         if not self.context.final_answer:
             completed_tools = [m.tool_name for m in self.context.memory_trace if hasattr(m, 'tool_name') and m.tool_name]
             summary = f"Completed {len(completed_tools)} steps: {', '.join(set(completed_tools))}"
             self.context.final_answer = f"FINAL_ANSWER: [Task completed. {summary}]"
         
+        # Log final workflow status
+        workflow_status = {
+            'search': self.workflow_steps['search_completed'],
+            'sheet_created': self.workflow_steps['sheet_created'],
+            'data_added': self.workflow_steps['data_added'],
+            'link_retrieved': self.workflow_steps['link_retrieved']
+        }
+        self._logger.log_workflow_step(999, "completion", "completed", f"Workflow status: {workflow_status}")
+        
         print(f"[phase] ✅ Final Answer: {self.context.final_answer}")
+        print(f"[workflow] Final Status: {workflow_status}")
         print(f"{'='*60}\n")
         
         return self.context.final_answer or "FINAL_ANSWER: [no result]"
